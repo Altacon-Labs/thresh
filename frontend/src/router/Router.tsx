@@ -1,45 +1,19 @@
-import {
-  createBrowserRouter,
-  createRoutesFromElements,
-  Route,
-  RouterProvider,
-} from "react-router-dom";
-import Home from "../pages/home/Home";
+import { createBrowserRouter, RouterProvider } from "react-router-dom";
+import Inventory from "../pages/inventory/Inventory";
 
-// LAYOUTS
-import DashboardLayout from "../layout/DashboardLayout";
+function StellarWorkspace() {
+  return (
+    <main className="mx-auto min-h-screen w-full max-w-6xl px-4 py-8 sm:px-8">
+      <Inventory />
+    </main>
+  );
+}
 
-// PAGES
-import Dashboard from "../pages/dashboard/Dashboard";
-import Portfolio from "../pages/portfolio/Portfolio";
-import Marketplace from "../pages/home/Marketplace";
-import AssetsSection from "../components/marketplaceCards/AssetsSection";
-import AssetDetails from "../pages/home/AssetDetails";
-import MarketPlaceDashboard from "../pages/marketplace/MarketPlaceDashboard";
+const router = createBrowserRouter([
+  { path: "/", element: <StellarWorkspace /> },
+  { path: "/dashboard/inventory", element: <StellarWorkspace /> },
+]);
 
-const router = createBrowserRouter(
-  createRoutesFromElements(
-    <Route path="/">
-      {/* LANDING PAGE */}
-      <Route path="/" element={<Home />} />
-      <Route path="/marketplace" element={<Marketplace />} />
-      <Route path="/governance" element={<Home />} />
-      <Route path="/" element={<AssetsSection />} />
-      <Route path="/asset/:title" element={<AssetDetails />} />
-
-      {/* EVERY OTHER PAGE ROUTING SHOULD BE DONE IN HERE */}
-      <Route path="dashboard" element={<DashboardLayout />}>
-        {/* TO NAVIGATE TO THIS ROUTE JUST GO TO: /flexi/example  */}
-        <Route path="dashboard" element={<Dashboard />} />
-        <Route path="portfolio" element={<Portfolio />} />
-        <Route path="marketplace" element={<MarketPlaceDashboard />} />
-      </Route>
-    </Route>
-  )
-);
-
-const Router = () => {
+export default function Router() {
   return <RouterProvider router={router} />;
-};
-
-export default Router;
+}

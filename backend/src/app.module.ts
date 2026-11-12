@@ -1,12 +1,8 @@
-// app.module.ts
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { AuthModule } from './modules/auth/auth.module';
-import { UserModule } from './modules/user/user.module';
-import { AssetsModule } from './modules/assets/assets.module';
-import { KycModule } from './modules/kyc/kyc.module';
-import { TransactionModule } from './modules/transactions/transactions.module';
+import { InventoryModule } from './modules/inventory/inventory.module';
+import { ResponseService } from './framework/response/response.service';
 
 @Module({
   imports: [
@@ -17,17 +13,12 @@ import { TransactionModule } from './modules/transactions/transactions.module';
     MongooseModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
-        uri: configService.get<string>('MONGODB_URI'),
+        uri: configService.getOrThrow<string>('MONGODB_URI'),
       }),
       inject: [ConfigService],
     }),
-    AuthModule,
-    UserModule,
-    AssetsModule,
-    KycModule,
-    TransactionModule,
-    // FilesModule,
-    // BlockchainModule,
+    InventoryModule,
   ],
+  providers: [ResponseService],
 })
 export class AppModule {}

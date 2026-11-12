@@ -4,11 +4,12 @@ const { createHash } = require("node:crypto");
 const axios = require("axios");
 const { validate } = require("class-validator");
 const { InventoryGuard } = require("../dist/modules/inventory/inventory.guard.js");
+const { InventoryActors } = require("../dist/modules/inventory/inventory-actors.js");
 const { InventoryService } = require("../dist/modules/inventory/inventory.service.js");
 const { RegisterLotDto, ReviewLotDto, RecordValuationDto, RecordStellarProofDto } = require("../dist/modules/inventory/inventory.dto.js");
 
 const scope = { workspaceId: "pilot" };
-const account = "G".padEnd(56, "A");
+const account = "GBXFXNDLV4LSWA4VB7YIL5GBD7BVNR22SGBTDKMO2SBZZHDXSKZYCP7L";
 const verifier = { ...scope, id: "inspector", role: "verifier", stellarAccount: account };
 const lender = { ...scope, id: "lender", role: "lender" };
 const id = "1".repeat(24);
@@ -47,17 +48,27 @@ function inventoryFixture() {
   return { lot, service: new InventoryService(model), writes: () => writes };
 }
 
-test("inventory guard accepts only a configured bearer key and never exposes its hash", () => {
+test("inventory guard accepts configured keys and wallet sessions without exposing credential hashes", async () => {
   const key = "d".repeat(64);
   const tokenHash = createHash("sha256").update(key).digest("hex");
-  const guard = new InventoryGuard({ get: () => JSON.stringify([{ ...verifier, tokenHash }]) });
+  const directory = new InventoryActors({ get: () => JSON.stringify([{ ...verifier, tokenHash }]) });
+  const walletActor = { ...verifier, walletAddress: account };
+  const walletToken = `wallet_${"a".repeat(64)}`;
+  const guard = new InventoryGuard(directory, { sessionActor: async (token) => token === walletToken ? walletActor : undefined });
   const request = { headers: { authorization: `Bearer ${key}` } };
   const context = { switchToHttp: () => ({ getRequest: () => request }) };
-  assert.equal(guard.canActivate(context), true);
-  assert.deepEqual(request.inventoryActor, verifier);
+  assert.equal(await guard.canActivate(context), true);
+  assert.deepEqual(request.inventoryActor, walletActor);
+  request.headers.authorization = `Bearer ${walletToken}`;
+  assert.equal(await guard.canActivate(context), true);
+  assert.deepEqual(request.inventoryActor, walletActor);
   request.headers.authorization = "Bearer invalid";
-  assert.throws(() => guard.canActivate(context), { name: "UnauthorizedException" });
-  assert.throws(() => new InventoryGuard({ get: () => JSON.stringify([{ ...verifier, tokenHash }, { ...verifier, tokenHash }]) }), /duplicate/);
+  await assert.rejects(guard.canActivate(context), { name: "UnauthorizedException" });
+  assert.throws(() => new InventoryActors({ get: () => JSON.stringify([{ ...verifier, tokenHash }, { ...verifier, tokenHash }]) }), /duplicate/);
+  assert.doesNotThrow(() => new InventoryActors({ get: () => JSON.stringify([
+    { ...scope, id: "operator-1", role: "warehouse", tokenHash: "1".repeat(64) },
+    { ...scope, id: "operator-2", role: "warehouse", tokenHash: "2".repeat(64) },
+  ]) }));
 });
 
 test("request DTOs reject invalid dates, token hashes, quantities and optional values", async () => {
@@ -70,6 +81,9 @@ test("request DTOs reject invalid dates, token hashes, quantities and optional v
   const modern = { receiptNumber: "PARTS-01", category: "spare_parts", quantity: 12,
     grade: "New", receiptEvidenceId: "parts-receipt", assetName: "Water pump", assetIdentifier: "SKU-PUMP" };
   assert.deepEqual(await check(RegisterLotDto, modern), []);
+  assert.deepEqual(await check(RegisterLotDto, { ...modern, custodyType: "owner_site", custodyLocation: "Workshop, Kaduna" }), []);
+  assert((await check(RegisterLotDto, { ...modern, custodyType: "third_party" })).includes("custodyLocation"));
+  assert((await check(RegisterLotDto, { ...modern, custodyLocation: "Workshop, Kaduna" })).includes("custodyType"));
   assert((await check(RegisterLotDto, { ...modern, assetIdentifier: " " })).includes("assetIdentifier"));
   assert((await check(RegisterLotDto, { ...modern, category: "unrecognized" })).includes("category"));
   assert.deepEqual(await check(ReviewLotDto, review), []);

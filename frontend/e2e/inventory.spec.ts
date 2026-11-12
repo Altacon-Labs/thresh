@@ -1,26 +1,28 @@
-import { randomUUID } from "node:crypto";
+import { createHash, createPrivateKey, randomUUID, sign } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
+import { demoLots } from "../src/pages/inventory/demoInventory";
 
-async function signIn(page: Page, key: string) {
-  await page.getByRole("button", { name: "Connect live workspace" }).click();
-  await page.getByLabel("Inventory access key").fill(key);
-  await page.getByRole("button", { name: "Open live inventory" }).click();
+const cors = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-headers": "authorization, content-type",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
+};
+
+async function signIn(page: Page, role: "Asset operator" | "Verifier" | "Lender", key: string) {
+  const dialog = page.getByRole("dialog", { name: "Access your workspace" });
+  if (!(await dialog.isVisible())) {
+    await page.getByRole("navigation", { name: "Public navigation" }).getByRole("button", { name: "Sign in", exact: true }).click();
+  }
+  await dialog.getByRole("radio", { name: new RegExp(role) }).check();
+  await dialog.getByLabel("Access key", { exact: true }).fill(key);
+  await dialog.getByRole("button", { name: "Sign in to workspace", exact: true }).click();
 }
 
-async function register(page: Page, receipt: string) {
-  await page.getByLabel("Receipt number", { exact: true }).fill(receipt);
-  await page.getByLabel("Quantity (kg)").fill("5000");
-  await page.getByLabel("Grade", { exact: true }).fill("Grade A");
-  await page.getByLabel("Receipt evidence ID").fill("receipt-example");
-  await page.getByRole("button", { name: "Register lot" }).click();
-  await expect(page.getByRole("status")).toHaveText("Lot registered.");
-}
-
-async function review(page: Page, decision = "verified") {
-  await page.getByLabel("Decision").selectOption(decision);
+async function review(page: Page) {
+  await page.getByLabel("Decision").selectOption("verified");
   await page.getByLabel("Inspection time").fill(new Date(Date.now() - 7_200_000).toISOString().slice(0, 16));
   await page.getByLabel("Inspection evidence ID").fill("inspection-example");
-  await page.getByLabel("Reason").fill("Stock and receipt checked.");
+  await page.getByLabel("Reason").fill("Stock and evidence checked.");
   await page.getByRole("button", { name: "Record decision" }).click();
   await expect(page.getByRole("status")).toHaveText("Inspection decision recorded.");
 }
@@ -35,101 +37,249 @@ async function value(page: Page, daysAgo: number, price: string, approved?: stri
   await expect(page.getByRole("status")).toHaveText("Valuation recorded.");
 }
 
-test("demo renders 24 lots and charts, then supports a complete role-based walkthrough", async ({ page }) => {
-  await page.goto("/");
-  await expect(page.getByText("Demo workspace", { exact: true })).toBeVisible();
-  await expect(page.getByRole("row")).toHaveCount(25);
-  await expect(page.getByRole("img", { name: /reference price history/ })).toBeVisible();
-  await page.getByLabel("Find receipt").fill("no-match");
-  await expect(page.getByText("No matching receipts.")).toBeVisible();
-  await page.getByLabel("Demo role").selectOption("warehouse");
-  await register(page, "WALKTHROUGH-001");
-  await expect(page.getByRole("heading", { name: "Receipt WALKTHROUGH-001" })).toBeVisible();
-
-  await page.getByLabel("Demo role").selectOption("verifier");
-  await review(page);
-  await page.getByRole("button", { name: "Simulate Stellar proof" }).click();
-  await expect(page.getByText("Simulated Stellar proof", { exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: /View Stellar/ })).toHaveCount(0);
-
-  await page.getByLabel("Demo role").selectOption("lender");
-  await value(page, 2, "430.00");
-  await expect(page.getByText("The chart appears after two dates", { exact: false })).toBeVisible();
-  await value(page, 1, "450.05", "2000000");
-  await expect(page.getByText("₦2,250,250.00", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("₦2,000,000.00", { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole("img", { name: /Kano from Pilot survey/ })).toBeVisible();
-  await page.getByText("Valuation history", { exact: true }).click();
-  await expect(page.getByRole("columnheader", { name: "Estimate" })).toBeVisible();
-
-  await page.getByLabel("Demo role").selectOption("verifier");
-  await review(page, "revoked");
-  await page.getByLabel("Demo role").selectOption("lender");
-  await expect(page.getByText(/Historical valuations/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Record valuation" })).toHaveCount(0);
-  await page.getByRole("button", { name: "Reset demo" }).click();
-  await expect(page.getByRole("row")).toHaveCount(25);
+test("signed-out visitors browse quotes and can dismiss the role dialog without leaving Explore", async ({ page }) => {
+  let requests = 0;
+  await page.route("**/api/inventory/**", (route) => {
+    requests++;
+    return route.abort();
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/dashboard/inventory");
+  await expect(page.getByRole("heading", { name: "Real-world assets" })).toBeVisible();
+  await expect(page.getByText("Illustrative prices and trends")).toBeVisible();
+  const categories = page.getByRole("navigation", { name: "Asset categories" });
+  await categories.getByRole("link", { name: "Equipment", exact: true }).click();
+  await expect(categories.getByRole("link", { name: "Equipment", exact: true })).toHaveAttribute("aria-current", "page");
+  await page.getByRole("link", { name: "Commercial air compressor, EX-004" }).click();
+  await expect(page.getByRole("img", { name: /Commercial air compressor reference price history/ })).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Asset context" }).getByRole("heading", { name: "Price performance" })).toBeVisible();
+  await expect(page).toHaveURL(/example-4$/);
+  const range = page.getByRole("button", { name: "1W", exact: true });
+  await range.click();
+  await expect(range).toHaveAttribute("aria-pressed", "true");
+  await page.getByLabel("Quantity (units)").fill("0");
+  await expect(page.getByLabel("Estimated value")).toHaveText("$0.00");
+  await expect(page.getByText("Lender-approved value")).toHaveCount(0);
+  await page.getByRole("button", { name: "Sign in to review collateral" }).click();
+  const dialog = page.getByRole("dialog", { name: "Access your workspace" });
+  await expect(dialog.getByRole("radio", { name: /Lender/ })).toBeChecked();
+  await dialog.getByRole("button", { name: "Request access" }).click();
+  await expect(dialog.getByText(/Ask your workspace administrator/)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Commercial air compressor" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  expect(requests).toBe(0);
 });
 
-test("live sign-in replaces demo records, including with an empty live list", async ({ page }) => {
+test("quote currency and stablecoin preferences survive a reload", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Settings · USD" }).click();
+  const settings = page.getByRole("dialog", { name: "Settings" });
+  await expect(settings.getByLabel("Preferred Stellar stablecoin")).toHaveValue("USDC");
+  await settings.getByLabel("Explore quote currency").selectOption("NGN");
+  await settings.getByLabel("Preferred Stellar stablecoin").selectOption("EURC");
+  await settings.getByRole("button", { name: "Done" }).click();
+  await expect(page.getByText("Reference prices in NGN")).toBeVisible();
+  await page.reload();
+  await page.getByRole("button", { name: "Settings · NGN" }).click();
+  await expect(settings.getByLabel("Preferred Stellar stablecoin")).toHaveValue("EURC");
+});
+
+test("Explore shows four metric cards and persists a watched asset", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  const highlights = page.getByRole("region", { name: "Market highlights" });
+  await expect(highlights.getByRole("heading")).toHaveText(["Trending", "Watchlist", "Market status", "Advertisement"]);
+  await expect(highlights.getByRole("img", { name: /Illustrative quote observations by date/ })).toBeVisible();
+  const first = await highlights.locator(".public-metric-card").first().boundingBox();
+  expect(first!.width).toBeCloseTo(first!.height, 0);
+  const watch = page.getByRole("button", { name: "Watch Commercial air compressor" });
+  await watch.click();
+  await expect(highlights.getByRole("list", { name: "Saved assets" })).toContainText("Commercial air compressor");
+  await page.reload();
+  await expect(watch).toHaveAttribute("aria-pressed", "true");
+  await watch.click();
+  await expect(highlights.getByText("Select the star next to an asset to save it here.")).toBeVisible();
+});
+
+test("Sign up sits after search and opens the access request flow", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  const search = await page.getByRole("search").boundingBox();
+  const signUp = page.getByRole("button", { name: "Sign up", exact: true });
+  const button = await signUp.boundingBox();
+  expect(button!.x).toBeGreaterThanOrEqual(search!.x + search!.width);
+  await signUp.click();
+  await expect(page.getByRole("dialog").getByText(/Ask your workspace administrator/)).toBeVisible();
+});
+
+test("Trending and Watchlist show four items and link to the full lists", async ({ page }) => {
+  await page.goto("/");
+  const highlights = page.getByRole("region", { name: "Market highlights" });
+  await expect(highlights.getByRole("list", { name: "Trending assets" }).getByRole("listitem")).toHaveCount(4);
+  await highlights.getByRole("link", { name: "More trending assets" }).click();
+  await expect(page.getByRole("heading", { name: "Trending assets" })).toBeVisible();
+  await expect(page.getByRole("row").nth(5)).toBeVisible();
+  await page.getByRole("link", { name: "Back to Explore" }).click();
+
+  const watchButtons = page.getByRole("button", { name: /^Watch / });
+  for (let index = 0; index < 5; index++) await watchButtons.nth(index).click();
+  await expect(highlights.getByRole("list", { name: "Saved assets" }).getByRole("listitem")).toHaveCount(4);
+  await highlights.getByRole("link", { name: "More watched assets" }).click();
+  await expect(page.getByRole("heading", { name: "Your watchlist" })).toBeVisible();
+  await expect(page.getByRole("row")).toHaveCount(6);
+});
+
+test("desktop Explore has public navigation, searchable quotes, and a footer", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await expect(page.getByRole("navigation", { name: "Public navigation" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Asset categories" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Explore footer links" })).toBeVisible();
+  await page.getByRole("searchbox", { name: "Search assets" }).fill("compressor");
+  await page.getByRole("button", { name: "Submit asset search" }).click();
+  await expect(page).toHaveURL(/q=compressor$/);
+  const table = page.getByRole("region", { name: "Reference quotes table" });
+  await expect(table.getByRole("link", { name: "Commercial air compressor, EX-004" })).toBeVisible();
+  await expect(table.getByRole("row")).toHaveCount(2);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1440);
+});
+
+test("desktop asset details place the chart between identity and context", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/real-world-assets/example-4");
+  const [left, chart, right] = await Promise.all([
+    page.getByRole("complementary", { name: "Asset information" }).boundingBox(),
+    page.getByRole("region", { name: "Reference price chart" }).boundingBox(),
+    page.getByRole("complementary", { name: "Asset context" }).boundingBox(),
+  ]);
+  expect(left!.x + left!.width).toBeLessThan(chart!.x);
+  expect(chart!.x + chart!.width).toBeLessThan(right!.x);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1440);
+});
+
+test("sign-in rejects a mismatched role without loading records and signs out to Explore", async ({ page }) => {
+  let listCalls = 0;
   await page.route("**/api/inventory/**", async (route) => {
-    const headers = {
-      "access-control-allow-origin": "*", "access-control-allow-headers": "authorization, content-type",
-      "access-control-allow-methods": "GET, POST, OPTIONS",
-    };
-    if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers });
-    const key = route.request().headers().authorization;
-    if (key !== "Bearer good-key") {
-      return route.fulfill({ status: 401, headers, json: { message: "Invalid live access key." } });
+    if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors });
+    if (route.request().url().endsWith("/session")) {
+      if (route.request().headers().authorization !== "Bearer lender-key") {
+        return route.fulfill({ status: 401, headers: cors, json: { message: "Invalid access key." } });
+      }
+      return route.fulfill({ headers: cors, json: { id: "lender", role: "lender" } });
     }
-    return route.fulfill({
-      headers,
-      json: route.request().url().endsWith("/session") ? { id: "live-lender", role: "lender" } : [],
+    listCalls++;
+    return route.fulfill({ headers: cors, json: [] });
+  });
+  await page.goto("/?view=markets");
+  await expect(page.getByRole("heading", { name: "Real-world assets" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspace" })).toHaveCount(0);
+  await expect(page.getByText("Demo workspace")).toHaveCount(0);
+  await signIn(page, "Verifier", "wrong-key");
+  await expect(page.getByRole("alert")).toHaveText("Invalid access key.");
+  await signIn(page, "Verifier", "lender-key");
+  await expect(page.getByRole("alert")).toContainText("belongs to the Lender role");
+  expect(listCalls).toBe(0);
+  await signIn(page, "Lender", "lender-key");
+  await expect(page.getByRole("heading", { name: "Collateral review" })).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Asset context" }).getByRole("heading", { name: "Workspace snapshot" })).toBeVisible();
+  await expect(page.getByText("No currently verified assets are ready for review.")).toBeVisible();
+  expect(listCalls).toBe(1);
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page.getByRole("heading", { name: "Real-world assets" })).toBeVisible();
+});
+
+test("verifier and lender see different asset queues and controls", async ({ page }) => {
+  const samples = demoLots();
+  await page.route("**/api/inventory/**", async (route) => {
+    const req = route.request();
+    if (req.method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors });
+    const role = req.headers().authorization === "Bearer verifier-key" ? "verifier" : "lender";
+    return route.fulfill({ headers: cors, json: req.url().endsWith("/session") ? { id: role, role } : samples });
+  });
+  await page.goto("/");
+  await signIn(page, "Verifier", "verifier-key");
+  await expect(page.getByRole("heading", { name: "Inspection queue" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Needs inspection" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "DEMO-WH-015", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "DEMO-WH-001", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Markets" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await signIn(page, "Lender", "lender-key");
+  await expect(page.getByRole("heading", { name: "Collateral review" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Currently verified" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("complementary", { name: "Asset context" }).getByRole("heading", { name: "Asset snapshot" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "DEMO-WH-001", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "DEMO-WH-015", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "All assets" }).click();
+  await expect(page.getByRole("button", { name: "DEMO-WH-015", exact: true })).toBeVisible();
+});
+
+test("lender can browse Markets and open the exact asset when scrollTo returns a promise", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.addInitScript(() => {
+    const scrollTo = window.scrollTo.bind(window);
+    Object.defineProperty(window, "scrollTo", {
+      configurable: true,
+      value: (x: number, y: number) => {
+        scrollTo(x, y);
+        return Promise.resolve();
+      },
     });
   });
-
-  await page.goto("/dashboard/inventory");
-  await signIn(page, "bad-key");
-  await expect(page.getByRole("alert")).toHaveText("Invalid live access key.");
-  await expect(page.getByRole("button", { name: "DEMO-WH-001", exact: true })).toBeVisible();
-  await page.getByLabel("Inventory access key").fill("good-key");
-  await page.getByRole("button", { name: "Open live inventory" }).click();
-  await expect(page.getByText("Live workspace · lender")).toBeVisible();
-  await expect(page.getByText("No lots registered.")).toBeVisible();
-  await expect(page.getByText("Demo workspace", { exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "Refresh inventory" }).click();
-  await expect(page.getByRole("status")).toHaveText("Inventory refreshed.");
-  await page.getByRole("button", { name: "Sign out" }).click();
-  await expect(page.getByText("Demo workspace", { exact: true })).toBeVisible();
+  const samples = demoLots();
+  await page.route("**/api/inventory/**", async (route) => {
+    if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors });
+    return route.fulfill({ headers: cors, json: route.request().url().endsWith("/session")
+      ? { id: "lender", role: "lender" } : samples });
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await signIn(page, "Lender", "lender-key");
+  await page.getByRole("link", { name: "Markets", exact: true }).click();
+  await page.getByRole("button", { name: "Equipment", exact: true }).click();
+  await page.getByLabel("Find asset", { exact: true }).fill("DEMO-WH-004");
+  await page.getByRole("link", { name: "Commercial air compressor, DEMO-WH-004" }).click();
+  await expect(page.getByRole("img", { name: /Commercial air compressor reference price history/ })).toBeVisible();
+  await page.getByRole("button", { name: "Open asset record" }).click();
+  await expect(page.getByRole("heading", { name: "Asset DEMO-WH-004" })).toBeInViewport();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  expect(errors).toEqual([]);
 });
 
 test("a live packaged-goods lot persists across roles through the real API and MongoDB", async ({ page }) => {
   test.skip(process.env.THRESH_LIVE_E2E !== "1", "Requires the integration MongoDB database.");
   const receipt = `BROWSER-${randomUUID().toUpperCase()}`;
-  await page.goto("/");
-  await signIn(page, "0".repeat(64));
-  await expect(page.getByText("Live workspace · warehouse")).toBeVisible();
+  await page.goto("/dashboard/inventory");
+  await signIn(page, "Asset operator", "0".repeat(64));
+  await expect(page.getByRole("heading", { name: "Asset registry" })).toBeVisible();
+  if (!(await page.getByLabel("Asset category").isVisible())) await page.getByRole("button", { name: "Register an asset", exact: true }).click();
   await page.getByLabel("Asset category").selectOption("packaged_goods");
-  await page.getByLabel("Receipt number", { exact: true }).fill(receipt);
+  await page.getByLabel("Where is the asset held?").selectOption("third_party");
+  await page.getByLabel("Site or facility").fill("Partner depot, Kano");
+  await page.getByLabel("Custody reference", { exact: true }).fill(receipt);
   await page.getByLabel("Asset name").fill("Boxed detergent");
   await page.getByLabel("Batch ID").fill("DETERGENT-001");
   await page.getByLabel("Quantity (units)").fill("100");
   await page.getByLabel("Condition", { exact: true }).fill("Sealed");
-  await page.getByLabel("Receipt evidence ID").fill("receipt-example");
-  await page.getByRole("button", { name: "Register lot" }).click();
+  await page.getByLabel("Custody evidence ID").fill("custody-example");
+  await page.getByRole("button", { name: "Register asset" }).click();
   await expect(page.getByRole("status")).toHaveText("Lot registered.");
   await page.getByRole("button", { name: "Sign out" }).click();
 
-  await signIn(page, "1".repeat(64));
-  await expect(page.getByText("Live workspace · verifier")).toBeVisible();
-  await page.getByLabel("Find receipt").fill(receipt);
+  await signIn(page, "Verifier", "1".repeat(64));
+  await expect(page.getByRole("heading", { name: "Inspection queue" })).toBeVisible();
+  await page.getByLabel("Find asset record").fill(receipt);
   await page.getByRole("button", { name: receipt, exact: true }).click();
+  await expect(page.getByText("Third-party custodian · Partner depot, Kano")).toBeVisible();
   await review(page);
   await page.getByRole("button", { name: "Sign out" }).click();
 
-  await signIn(page, "2".repeat(64));
-  await expect(page.getByText("Live workspace · lender")).toBeVisible();
-  await page.getByLabel("Find receipt").fill(receipt);
+  await signIn(page, "Lender", "2".repeat(64));
+  await expect(page.getByRole("heading", { name: "Collateral review" })).toBeVisible();
+  await page.getByLabel("Find asset record").fill(receipt);
   await page.getByRole("button", { name: receipt, exact: true }).click();
   await value(page, 2, "430.00", undefined, "unit");
   await value(page, 1, "450.05", "40000", "unit");
@@ -171,6 +321,36 @@ test("live API checks credentials, role, lot validation and workspace scope", as
   } })).status()).toBe(409);
 });
 
+test("a real API wallet session accepts a Stellar signature once and revokes it on sign-out", async ({ request }) => {
+  test.skip(process.env.THRESH_LIVE_E2E !== "1", "Requires the integration MongoDB database.");
+  const address = "GBXFXNDLV4LSWA4VB7YIL5GBD7BVNR22SGBTDKMO2SBZZHDXSKZYCP7L";
+  // Published SEP-53 test key, configured only in the browser test database.
+  const seed = "SAKICEVQLYWGSOJS4WW7HZJWAHZVEEBS527LHK5V4MLJALYKICQCJXMW";
+  const bits = [...seed].map((letter) => "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".indexOf(letter).toString(2).padStart(5, "0")).join("");
+  const keyBytes = Buffer.from(bits.match(/.{8}/g)!.map((byte) => Number.parseInt(byte, 2))).subarray(1, 33);
+  const signer = createPrivateKey({
+    key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), keyBytes]), format: "der", type: "pkcs8",
+  });
+  const api = "http://127.0.0.1:3102/api/inventory";
+  const headers = { Origin: "http://127.0.0.1:4173" };
+  const data = { address, role: "verifier" };
+  expect((await request.post(`${api}/wallet/challenge`, { headers, data: { ...data, role: "lender" } })).status()).toBe(403);
+  const challenge = await request.post(`${api}/wallet/challenge`, { headers, data });
+  expect(challenge.status()).toBe(200);
+  const { nonce, message } = await challenge.json();
+  const digest = createHash("sha256").update("Stellar Signed Message:\n").update(message).digest();
+  const response = { ...data, nonce, signature: sign(null, digest, signer).toString("base64") };
+  const verified = await request.post(`${api}/wallet/verify`, { headers, data: response });
+  expect(verified.status()).toBe(200);
+  const { token } = await verified.json();
+  const authorized = { ...headers, Authorization: `Bearer ${token}` };
+  const session = await request.get(`${api}/session`, { headers: authorized });
+  expect(await session.json()).toMatchObject({ role: "verifier", walletAddress: address, stellarAccount: address });
+  expect((await request.post(`${api}/wallet/verify`, { headers, data: response })).status()).toBe(401);
+  expect((await request.post(`${api}/wallet/logout`, { headers: authorized, data: {} })).status()).toBe(204);
+  expect((await request.get(`${api}/session`, { headers: authorized })).status()).toBe(401);
+});
+
 test("a live verifier can prepare a Stellar proof and save the confirmed hash", async ({ page }) => {
   const hash = "a".repeat(64);
   const account = "G".padEnd(56, "A");
@@ -197,8 +377,10 @@ test("a live verifier can prepare a Stellar proof and save the confirmed hash", 
     expect(req.postDataJSON()).toEqual({ transactionHash: hash });
     return route.fulfill({ headers, json: { ...lot, reviews: [{ ...inspection, stellarTransactionHash: hash }] } });
   });
-  await page.goto("/");
-  await signIn(page, "live-key");
+  await page.goto("/dashboard/inventory");
+  await signIn(page, "Verifier", "live-key");
+  await page.getByRole("button", { name: "All assets", exact: true }).click();
+  await page.getByRole("button", { name: "LIVE-WH-001", exact: true }).click();
   await page.getByRole("button", { name: "Get Stellar transaction details" }).click();
   await expect(page.getByText("d".repeat(64), { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Build in Stellar Lab" })).toBeVisible();

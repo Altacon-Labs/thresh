@@ -1,6 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
-import { categories, InventoryCategory } from './inventory-category';
+import { categories, custodyTypes, CustodyType, InventoryCategory } from './inventory-category';
 
 @Schema({ _id: false })
 export class InventoryReview {
@@ -96,6 +96,12 @@ export class InventoryLot {
 
   @Prop({ required: true })
   receiptEvidenceId: string;
+
+  @Prop({ type: String, enum: [...custodyTypes] })
+  custodyType?: CustodyType;
+
+  @Prop()
+  custodyLocation?: string;
 
   @Prop({ type: String, required: true, enum: ['pending', 'verified', 'rejected', 'revoked'], default: 'pending' })
   status: 'pending' | 'verified' | 'rejected' | 'revoked';

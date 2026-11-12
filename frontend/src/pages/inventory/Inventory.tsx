@@ -1,47 +1,113 @@
-import { useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useLocation, useMatch, useNavigate, useSearchParams } from "react-router-dom";
+import WorkspaceLayout from "../../app/WorkspaceLayout";
+import PreferencesDialog from "../../app/PreferencesDialog";
+import { parsePreferences, preferenceKey, type Preferences } from "./preferences";
+import PublicMarketLayout from "../../app/PublicMarketLayout";
+import ContextCard from "../../app/ContextCard";
+import Markets from "./Markets";
+import PublicMarkets from "./PublicMarkets";
+import PublicAssetDetail from "./PublicAssetDetail";
+import SignIn from "./SignIn";
 import ValuationPanel from "./ValuationPanel";
 import { parseNaira } from "./money";
-import { createDemoInventory, demoActor } from "./demoInventory";
-import { inventoryCategories, liveInventory, type Actor, type Category, type Decision, type Lot, type Role, type StellarProof } from "./inventoryClient";
+import { marketQuotes } from "./quotes";
+import { inRoleQueue, workflow } from "./workflow";
+import { publicExploreLots } from "./publicExplore";
+import { activeStellarAddress } from "./stellarWallet";
+import { revokeWalletSession, type WalletSessionInfo } from "./walletLogin";
+import {
+  custodyOptions, inventoryCategories, InventoryRequestError, liveInventory,
+  type Actor, type Category, type CustodyType, type Decision, type Lot, type Role, type StellarProof,
+} from "./inventoryClient";
 
 const api = import.meta.env.VITE_INVENTORY_API_URL || "http://localhost:3000/api";
-const demoEnabled = import.meta.env.VITE_ENABLE_DEMO !== "false";
-const field = "block w-full rounded border border-slate-300 px-3 py-2";
-const button = "rounded bg-blue-700 px-4 py-2 text-white disabled:opacity-50";
+const accessContact = import.meta.env.VITE_WORKSPACE_CONTACT_EMAIL;
+const exploreLots = publicExploreLots();
+const exploreQuotes = marketQuotes(exploreLots);
+const field = "workspace-field";
+const button = "workspace-button";
+
+function lotStatus(lot: Lot) {
+  return lot.status === "verified" && !lot.verificationCurrent ? "expired" : lot.status;
+}
 
 export default function Inventory() {
-  const [demo] = useState(createDemoInventory);
-  const [role, setRole] = useState<Role>("lender");
-  const [showLogin, setShowLogin] = useState(!demoEnabled);
+  const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
+  const { hash, pathname } = useLocation();
+  const publicAssetId = useMatch("/real-world-assets/:assetId")?.params.assetId;
+  const requestedLotId = params.get("lot");
+  const requestedAssetId = publicAssetId ?? params.get("asset");
+  const requestedCategory = params.get("category");
+  const publicCategory = requestedCategory && Object.prototype.hasOwnProperty.call(inventoryCategories, requestedCategory)
+    ? requestedCategory as Category : "all";
   const [key, setKey] = useState("");
-  const [liveActor, setLiveActor] = useState<Actor | null>(null);
-  const [lots, setLots] = useState<Lot[]>(() => demoEnabled ? demo.initialLots() : []);
-  const [selectedId, setSelectedId] = useState(demoEnabled ? "demo-001" : "");
+  const [actor, setActor] = useState<Actor | null>(null);
+  const [walletSession, setWalletSession] = useState<WalletSessionInfo | null>(null);
+  const [accessDialog, setAccessDialog] = useState<{ role?: Role; mode?: "request" } | null>(null);
+  const [lots, setLots] = useState<Lot[]>([]);
+  const [selectedId, setSelectedId] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  const [registrationOpen, setRegistrationOpen] = useState(false);
   const [filter, setFilter] = useState("");
   const [category, setCategory] = useState<Category>("maize");
+  const [custodyType, setCustodyType] = useState<CustodyType>("owner_site");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [proof, setProof] = useState<{ lotId: string; data: StellarProof } | null>(null);
-  const isDemo = !liveActor && demoEnabled;
-  const actor = isDemo ? demoActor(role) : liveActor;
-  const client = isDemo ? demo.client(role) : liveInventory(api, key);
-  const selected = lots.find((lot) => lot.id === selectedId);
+  const role = actor?.role ?? "warehouse";
+  const currentWorkflow = workflow[role];
+  const view = !actor || (role === "lender" && params.get("view") === "markets") ? "markets" : "inventory";
+  const client = liveInventory(api, key);
+  const selected = lots.find((lot) => lot.id === requestedLotId)
+    ?? lots.find((lot) => lot.id === selectedId);
   const currentReview = selected?.reviews[selected.reviews.length - 1];
   const categoryDetails = inventoryCategories[category];
   const selectedCategory = selected ? inventoryCategories[selected.category] : null;
+  const selectedCustody = selected ? custodyOptions[selected.custodyType ?? "warehouse"] : null;
+  const custody = custodyOptions[custodyType];
   const search = filter.trim().toLowerCase();
-  const matchingLots = lots.filter((lot) => [lot.receiptNumber, lot.assetName, lot.assetIdentifier,
-    inventoryCategories[lot.category].label].some((value) => value?.toLowerCase().includes(search)));
+  const queue = lots.filter((lot) => inRoleQueue(lot, role));
+  const matchingLots = (showAll ? lots : queue).filter((lot) => [lot.receiptNumber, lot.assetName,
+    lot.assetIdentifier, lot.custodyLocation, inventoryCategories[lot.category].label]
+    .some((value) => value?.toLowerCase().includes(search)));
+  const summary = [
+    { label: "Registered lots", count: lots.length, tone: "total" },
+    { label: "Currently verified", count: lots.filter((lot) => lot.verificationCurrent).length, tone: "verified" },
+    { label: "Needs inspection", count: lots.filter((lot) => inRoleQueue(lot, "verifier")).length, tone: "pending" },
+  ];
+
+  const scrollToRequestedLot = view === "inventory" && requestedLotId && selected?.id === requestedLotId;
+  useEffect(() => {
+    const anchor = hash && document.getElementById(hash.slice(1));
+    if (anchor) anchor.scrollIntoView({ block: "start" });
+    else if (!hash) window.scrollTo(0, 0);
+  }, [hash, pathname, view, requestedAssetId]);
+  useEffect(() => {
+    if (scrollToRequestedLot) document.getElementById("lot-details")?.scrollIntoView({ block: "start" });
+  }, [scrollToRequestedLot, requestedLotId]);
 
   async function run(action: () => Promise<void>) {
     setBusy(true);
     setError("");
     setNotice("");
     try {
+      if (walletSession) {
+        const address = await activeStellarAddress().catch(() => null);
+        if (address !== walletSession.address) {
+          signOut("Your Stellar wallet changed or disconnected. Sign in again to continue.");
+          return;
+        }
+      }
       await action();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Inventory request failed");
+      if (walletSession && cause instanceof InventoryRequestError && cause.status === 401) {
+        signOut("Your wallet session ended. Sign in again to continue.");
+      } else {
+        setError(cause instanceof Error ? cause.message : "Inventory request failed");
+      }
     } finally {
       setBusy(false);
     }
@@ -57,86 +123,166 @@ export default function Inventory() {
     setLots((current) => current.map((item) => item.id === lot.id ? lot : item));
   }
 
+  function selectLot(id: string) {
+    setSelectedId(id);
+    setProof(null);
+    if (requestedLotId) setParams({ view: "inventory" }, { replace: true });
+  }
+
+  function openInventory(id?: string) {
+    if (id) {
+      setSelectedId(id);
+      setFilter("");
+      setProof(null);
+      setShowAll(!queue.some((lot) => lot.id === id));
+    }
+    setParams(id ? { view: "inventory", lot: id } : { view: "inventory" });
+  }
+
+  const signOut = useCallback((message = "") => {
+    if (walletSession) void revokeWalletSession(api, key).catch(() => {});
+    setActor(null);
+    setWalletSession(null);
+    setKey("");
+    setLots([]);
+    setSelectedId("");
+    setFilter("");
+    setProof(null);
+    setError("");
+    setNotice(message);
+    setCategory("maize");
+    setCustodyType("owner_site");
+    navigate("/real-world-assets", { replace: true });
+  }, [key, navigate, walletSession]);
+
+  useEffect(() => {
+    if (!walletSession || busy) return;
+    let stopped = false;
+    let checking = false;
+    const checkWallet = async () => {
+      if (stopped || checking || document.visibilityState === "hidden") return;
+      checking = true;
+      const address = await activeStellarAddress().catch(() => null);
+      checking = false;
+      if (!stopped && address !== walletSession.address) {
+        signOut("Your Stellar wallet changed or disconnected. Sign in again to continue.");
+      }
+    };
+    const expiry = window.setTimeout(
+      () => signOut("Your wallet session expired. Sign in again to continue."),
+      Math.max(0, Date.parse(walletSession.expiresAt) - Date.now()),
+    );
+    const watcher = window.setInterval(() => void checkWallet(), 5000);
+    const onFocus = () => void checkWallet();
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    void checkWallet();
+    return () => {
+      stopped = true;
+      window.clearTimeout(expiry);
+      window.clearInterval(watcher);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [busy, signOut, walletSession]);
+
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [preferences, setPreferences] = useState(() => {
+    try {
+      return parsePreferences(window.localStorage.getItem(preferenceKey));
+    } catch {
+      return parsePreferences(null);
+    }
+  });
+  const settings = settingsOpen && <PreferencesDialog preferences={preferences} onClose={() => setSettingsOpen(false)}
+    onChange={(next: Preferences) => {
+      setPreferences(next);
+      try {
+        window.localStorage.setItem(preferenceKey, JSON.stringify(next));
+      } catch {
+        // Keep preferences available for the current session.
+      }
+    }} />;
+
+  if (!actor) {
+    const quote = exploreQuotes.find(({ lot }) => lot.id === requestedAssetId);
+    const query = params.get("q") ?? "";
+    return (
+      <PublicMarketLayout query={query} currency={preferences.currency} onSettings={() => setSettingsOpen(true)} onSignIn={() => setAccessDialog({})}
+        onRequestAccess={() => setAccessDialog({ mode: "request" })}>
+        {quote ? <PublicAssetDetail key={quote.lot.id} quote={quote} currency={preferences.currency} onSignIn={() => setAccessDialog({ role: "lender" })} />
+          : <PublicMarkets currency={preferences.currency} lots={exploreLots} category={publicCategory} query={query} />}
+        {settings}
+        {notice && <p role="status" className="workspace-feedback">{notice}</p>}
+        {accessDialog && <SignIn api={api} initialRole={accessDialog.role} initialMode={accessDialog.mode} contactEmail={accessContact}
+          onClose={() => setAccessDialog(null)} onSignIn={(session, records, credential, wallet) => {
+            setActor(session);
+            setKey(credential);
+            setWalletSession(wallet ?? null);
+            setNotice("");
+            setLots(records);
+            setSelectedId(records.find((lot) => inRoleQueue(lot, session.role))?.id ?? "");
+            setShowAll(false);
+            setRegistrationOpen(session.role === "warehouse" && records.length === 0);
+            setAccessDialog(null);
+            navigate("/dashboard/inventory", { replace: true });
+          }} />}
+      </PublicMarketLayout>
+    );
+  }
+
+  const contextAsset = view === "inventory" ? selected : lots.find((lot) => lot.id === requestedAssetId);
+  const workspaceFacts = contextAsset ? [
+    { label: "Asset", value: contextAsset.assetName },
+    { label: "Reference", value: contextAsset.receiptNumber },
+    { label: "Verification", value: <span className={`inventory-status ${lotStatus(contextAsset)}`}>{lotStatus(contextAsset)}</span> },
+    { label: "Custody", value: custodyOptions[contextAsset.custodyType ?? "warehouse"].label },
+    ...(contextAsset.custodyLocation ? [{ label: "Location", value: contextAsset.custodyLocation }] : []),
+  ] : [
+    { label: "Workspace", value: currentWorkflow.label },
+    { label: currentWorkflow.queueLabel, value: queue.length },
+  ];
+
   return (
-    <section className="space-y-6 pb-12 text-slate-900">
-      <header>
-        <p className="text-sm font-medium text-slate-600">Thresh · Stellar Testnet</p>
-        <h1 className="text-2xl font-semibold">Warehouse inventory</h1>
-      </header>
-      {error && <p role="alert" className="rounded bg-red-50 p-3 text-red-800">{error}</p>}
-      {notice && <p role="status" className="rounded bg-green-50 p-3 text-green-900">{notice}</p>}
-      {isDemo && (
-        <div className="flex flex-wrap items-center gap-4 rounded border border-amber-200 bg-amber-50 p-4">
-          <p><strong>Demo workspace</strong> · Sample records and simulated actions</p>
-          <label>Demo role <select className="rounded border border-slate-300 px-2 py-1" value={role} disabled={busy}
-            onChange={(event) => {
-              setRole(event.target.value as Role);
-              setError("");
-              setNotice("");
-            }}>
-            <option value="lender">Lender</option>
-            <option value="warehouse">Warehouse</option>
-            <option value="verifier">Verifier</option>
-          </select></label>
-          <button type="button" className="underline" disabled={busy} onClick={() => {
-            demo.reset();
-            setLots(demo.initialLots());
-            setSelectedId("demo-001");
-            setCategory("maize");
-            setFilter("");
-            setError("");
-            setNotice("Demo reset.");
-          }}>Reset demo</button>
-          <button type="button" className="underline" disabled={busy} onClick={() => setShowLogin(!showLogin)}>
-            {showLogin ? "Hide live sign-in" : "Connect live workspace"}
-          </button>
+    <WorkspaceLayout onSettings={() => setSettingsOpen(true)} view={view} role={actor.role} walletAddress={walletSession?.address} busy={busy}
+      showAssetLink={view === "inventory" && Boolean(selected)} onSignOut={() => signOut()}
+      context={<ContextCard title={contextAsset ? "Asset snapshot" : "Workspace snapshot"} facts={workspaceFacts}>
+        {view === "markets" && contextAsset && <button type="button" className="workspace-button secondary context-action"
+          onClick={() => openInventory(contextAsset.id)}>Review collateral</button>}
+      </ContextCard>}>
+    {settings}
+    <section id="overview" className="workspace-overview">
+      <header className={view === "markets" ? "workspace-heading market-hero" : "workspace-heading"}>
+        <div>
+          <h1>{view === "markets" ? "Collateral markets" : currentWorkflow.label}</h1>
+          <p>{view === "markets" ? "Explore reference prices and trace each quote back to a specific asset."
+            : currentWorkflow.description}</p>
         </div>
-      )}
-      {!liveActor && showLogin && (
-        <form className="max-w-sm space-y-3" onSubmit={(event) => void submit(event, async (data) => {
-          const accessKey = String(data.get("key")).trim();
-          const nextClient = liveInventory(api, accessKey);
-          const session = await nextClient.session();
-          const liveLots = await nextClient.list();
-          setLots(liveLots);
-          setSelectedId(liveLots[0]?.id ?? "");
-          setFilter("");
-          setKey(accessKey);
-          setLiveActor(session);
-          setShowLogin(false);
-          setProof(null);
-          setNotice("Connected to the live workspace.");
-        })}>
-          <label>Inventory access key<input className={field} name="key" type="password" autoComplete="off" required /></label>
-          <button className={button} disabled={busy}>Open live inventory</button>
-        </form>
-      )}
-      {actor && (
+        {view === "markets" && (
+          <button type="button" className="workspace-button market-hero-action" onClick={() => openInventory()}>
+            Go to collateral review
+          </button>
+        )}
+        {view === "inventory" && role === "warehouse" && (
+          <button type="button" className={button} aria-expanded={registrationOpen} disabled={busy}
+            onClick={() => setRegistrationOpen(!registrationOpen)}>
+            {registrationOpen ? "Close registration" : "Register an asset"}
+          </button>
+        )}
+      </header>
+      {view === "markets" && <Markets lots={lots} assetId={requestedAssetId} onOpenInventory={openInventory} />}
+      {view === "inventory" && (
         <>
-          <div className="flex flex-wrap items-center gap-4">
-            {!isDemo && <p>Live workspace · {actor.role}</p>}
-            <button type="button" className="underline" disabled={busy} onClick={() => void run(async () => {
-              const refreshed = await client.list();
-              setLots(refreshed);
-              if (!refreshed.some((lot) => lot.id === selectedId)) setSelectedId(refreshed[0]?.id ?? "");
-              setProof(null);
-              setNotice("Inventory refreshed.");
-            })}>Refresh inventory</button>
-            {!isDemo && <button type="button" className="underline" disabled={busy} onClick={() => {
-              setLiveActor(null);
-              setKey("");
-              setLots(demoEnabled ? demo.initialLots() : []);
-              setSelectedId(demoEnabled ? "demo-001" : "");
-              setCategory("maize");
-              setShowLogin(!demoEnabled);
-              setFilter("");
-              setProof(null);
-              setError("");
-              setNotice("");
-            }}>Sign out</button>}
-          </div>
-          {actor.role === "warehouse" && (
-            <form className="space-y-3 rounded border border-slate-200 p-4" onSubmit={(event) => {
+          <dl className="workspace-stats" aria-label="Inventory summary">
+            {summary.map(({ label, count, tone }) => (
+              <div className="workspace-card workspace-stat" key={label}>
+                <dt><span className={`stat-marker ${tone}`} aria-hidden="true" />{label}</dt>
+                <dd>{count.toLocaleString()}</dd>
+              </div>
+            ))}
+          </dl>
+          {role === "warehouse" && registrationOpen && (
+            <form className="workspace-card workspace-form space-y-4" onSubmit={(event) => {
               const form = event.currentTarget;
               void submit(event, async (data) => {
                 const lot = await client.register({
@@ -149,16 +295,20 @@ export default function Inventory() {
                   }),
                   grade: String(data.get("grade")),
                   receiptEvidenceId: String(data.get("receiptEvidenceId")),
+                  custodyType,
+                  custodyLocation: String(data.get("custodyLocation")),
                 });
                 setLots((current) => [lot, ...current]);
-                setSelectedId(lot.id);
+                selectLot(lot.id);
                 setFilter("");
                 setNotice("Lot registered.");
                 form.reset();
                 setCategory("maize");
+                setCustodyType("owner_site");
+                setRegistrationOpen(false);
               });
             }}>
-              <h2 className="font-semibold">Register inventory</h2>
+              <h2>Register an asset</h2>
               <div className="grid gap-3 sm:grid-cols-2">
                 <label>Asset category<select className={field} value={category}
                   onChange={(event) => setCategory(event.target.value as Category)}>
@@ -166,7 +316,15 @@ export default function Inventory() {
                     <option key={value} value={value}>{details.label}</option>
                   ))}
                 </select></label>
-                <label>Receipt number<input className={field} name="receiptNumber" maxLength={80} required /></label>
+                <label>Where is the asset held?<select className={field} value={custodyType}
+                  onChange={(event) => setCustodyType(event.target.value as CustodyType)}>
+                  {Object.entries(custodyOptions).map(([value, details]) => (
+                    <option key={value} value={value}>{details.label}</option>
+                  ))}
+                </select></label>
+                <label>Site or facility<input className={field} name="custodyLocation"
+                  placeholder="Site name and city" maxLength={120} required /></label>
+                <label key={`reference-${custodyType}`}>{custody.reference}<input className={field} name="receiptNumber" maxLength={80} required /></label>
                 {"identifierLabel" in categoryDetails && (
                   <>
                     <label>Asset name<input className={field} name="assetName" maxLength={120} required /></label>
@@ -177,51 +335,91 @@ export default function Inventory() {
                   : <label>Quantity ({categoryDetails.unit === "kg" ? "kg" : "units"})<input className={field}
                     key={categoryDetails.unit} name="quantity" type="number" min="1" step="1" required /></label>}
                 <label key={categoryDetails.conditionLabel}>{categoryDetails.conditionLabel}<input className={field} name="grade" maxLength={80} required /></label>
-                <label>Receipt evidence ID<input className={field} name="receiptEvidenceId" maxLength={120} required /></label>
+                <div key={`evidence-${custodyType}`}>
+                  <label>{custody.evidence}<input className={field} name="receiptEvidenceId" maxLength={120}
+                    aria-describedby="registration-evidence-hint" required /></label>
+                  <p className="mt-1 text-xs text-slate-600" id="registration-evidence-hint">{custody.evidenceHint}</p>
+                </div>
               </div>
-              <button className={button} disabled={busy}>Register lot</button>
+              <button className={button} disabled={busy}>Register asset</button>
             </form>
           )}
 
-          <label className="block max-w-sm">Find receipt<input className={field} value={filter} placeholder="Receipt, asset, or identifier"
-            onChange={(event) => setFilter(event.target.value)} /></label>
-          <div className="max-h-64 overflow-auto">
-            {lots.length === 0 ? <p>No lots registered.</p> : matchingLots.length === 0 ? <p>No matching receipts.</p> : (
-              <table className="w-full text-left">
-                <thead><tr>{["Receipt", "Asset", "Quantity", "Verification"].map((label) => (
-                  <th key={label} scope="col" className="border-b p-2">{label}</th>
+          <div id="inventory" className="inventory-grid">
+          <section className="workspace-card inventory-list" aria-labelledby="inventory-title">
+            <div className="inventory-list-heading">
+              <div><h2 id="inventory-title">{showAll ? "All assets" : currentWorkflow.queueLabel}</h2><p>{matchingLots.length} {matchingLots.length === 1 ? "asset" : "assets"}</p></div>
+              <button type="button" className="workspace-button secondary" disabled={busy} onClick={() => void run(async () => {
+                const refreshed = await client.list();
+                setLots(refreshed);
+                if (!refreshed.some((lot) => lot.id === selected?.id)) {
+                  setSelectedId(refreshed.find((lot) => showAll || inRoleQueue(lot, role))?.id ?? "");
+                }
+                setProof(null);
+                setNotice("Inventory refreshed.");
+              })}>Refresh</button>
+            </div>
+            {role !== "warehouse" && (
+              <div className="workspace-list-filters" aria-label="Asset scope">
+                <button type="button" aria-pressed={!showAll} onClick={() => {
+                  setShowAll(false);
+                  if (selected && !inRoleQueue(selected, role)) selectLot(queue[0]?.id ?? "");
+                }}>{currentWorkflow.queueLabel}</button>
+                <button type="button" aria-pressed={showAll} onClick={() => setShowAll(true)}>All assets</button>
+              </div>
+            )}
+            <label className="inventory-search">Find asset record<input className={field} value={filter} placeholder="Reference, asset, identifier, or location"
+              onChange={(event) => setFilter(event.target.value)} /></label>
+          <div className="inventory-table-scroll">
+            {matchingLots.length === 0 ? (
+              <p className="inventory-empty">{filter.trim() ? "No matching assets."
+                : showAll ? "No assets are registered in this workspace." : currentWorkflow.empty}</p>
+            ) : (
+              <table className="inventory-table">
+                <thead><tr>{["Reference", "Asset", "Quantity", "Verification"].map((label) => (
+                  <th key={label} scope="col">{label}</th>
                 ))}</tr></thead>
                 <tbody>{matchingLots.map((lot) => (
-                  <tr key={lot.id} className="border-b border-slate-200">
-                    <td className="p-2"><button className="text-blue-800 underline" type="button" aria-pressed={selectedId === lot.id}
+                  <tr key={lot.id} className={selected?.id === lot.id ? "selected" : undefined}>
+                    <td><button className="inventory-receipt" type="button" aria-pressed={selected?.id === lot.id}
                       onClick={() => {
-                        setSelectedId(lot.id);
-                        setProof(null);
+                        selectLot(lot.id);
+                        requestAnimationFrame(() => document.getElementById("lot-details")?.scrollIntoView({ block: "start" }));
                       }}>{lot.receiptNumber}</button></td>
-                    <td className="p-2">{lot.assetName}</td>
-                    <td className="p-2">{lot.quantity.toLocaleString()} {lot.unit === "kg" ? "kg" : lot.quantity === 1 ? "unit" : "units"}</td>
-                    <td className="p-2 capitalize">{lot.status === "verified" && !lot.verificationCurrent ? "expired" : lot.status}</td>
+                    <td>{lot.assetName}</td>
+                    <td className="whitespace-nowrap">{lot.quantity.toLocaleString()} {lot.unit === "kg" ? "kg" : lot.quantity === 1 ? "unit" : "units"}</td>
+                    <td><span className={`inventory-status ${lotStatus(lot)}`}>{lotStatus(lot)}</span></td>
                   </tr>
                 ))}</tbody>
               </table>
             )}
           </div>
+          </section>
 
-          {selected && selectedCategory && (
-            <section className="space-y-3 rounded border border-slate-200 p-4">
-              <h2 className="font-semibold">Receipt {selected.receiptNumber}</h2>
-              <p>{selected.assetName} · {selectedCategory.label} · {selectedCategory.conditionLabel} {selected.grade}</p>
+          {selected && selectedCategory && selectedCustody && (
+            <section id="lot-details" className="workspace-card inventory-detail space-y-4">
+              <header className="inventory-detail-heading">
+                <div>
+                  <p>{selectedCategory.label}</p>
+                  <h2>{selected.custodyType === "warehouse" || !selected.custodyType ? "Receipt" : "Asset"} {selected.receiptNumber}</h2>
+                </div>
+                <span className={`inventory-status ${lotStatus(selected)}`}>{lotStatus(selected)}</span>
+              </header>
+              <div className="inventory-meta">
+              <p>{selected.assetName} · {selectedCategory.conditionLabel} {selected.grade}</p>
               {selected.assetIdentifier && "identifierLabel" in selectedCategory && (
                 <p>{selectedCategory.identifierLabel} {selected.assetIdentifier}</p>
               )}
-              <p>Receipt evidence ID {selected.receiptEvidenceId}</p>
+              <p>{selectedCustody.label}{selected.custodyLocation ? ` · ${selected.custodyLocation}` : ""}</p>
+              <p>{selectedCustody.evidence} {selected.receiptEvidenceId}</p>
               {selected.verificationExpiresAt && <p>Verification expires {new Date(selected.verificationExpiresAt).toLocaleString()}</p>}
-              <section className="space-y-3 rounded border border-slate-200 p-4">
+              </div>
+              <section className="workspace-inset space-y-4">
                 <h3 className="font-semibold">Asset valuation</h3>
                 <ValuationPanel key={selected.id} valuations={selected.valuations ?? []} grade={selected.grade}
                   assetName={selected.assetName} unit={selected.unit} verificationCurrent={selected.verificationCurrent} />
                 {actor.role === "lender" && selected.verificationCurrent && (
-                  <form key={selected.id} className="space-y-3" onSubmit={(event) => {
+                  <form key={selected.id} className="workspace-action-form space-y-3" onSubmit={(event) => {
                     const form = event.currentTarget;
                     void submit(event, async (data) => {
                       const approved = String(data.get("approvedValue") ?? "").trim();
@@ -252,11 +450,10 @@ export default function Inventory() {
               {selected.reviews.length === 0 && <p>Awaiting independent review.</p>}
               <ul className="space-y-2">
                 {selected.reviews.map((review) => (
-                  <li key={`${review.recordedAt}-${review.decision}`} className="border-l-2 border-slate-200 pl-3">
+                  <li key={`${review.recordedAt}-${review.decision}`} className="inventory-review">
                     <p className="capitalize">{review.decision} by {review.actorId} on {new Date(review.recordedAt).toLocaleString()}</p>
                     <p>{review.reason}</p>
                     <p>Inspection evidence ID {review.inspectionEvidenceId} · {new Date(review.inspectedAt).toLocaleString()}</p>
-                    {review.demoProofRecorded && <p>Simulated Stellar proof</p>}
                     {review.stellarTransactionHash && (
                       <a className="break-all text-blue-800 underline" target="_blank" rel="noreferrer"
                         href={`https://horizon-testnet.stellar.org/transactions/${review.stellarTransactionHash}`}>
@@ -266,15 +463,9 @@ export default function Inventory() {
                   </li>
                 ))}
               </ul>
-              {isDemo && actor.role === "verifier" && selected.verificationCurrent && !currentReview?.demoProofRecorded && (
-                <button type="button" className={button} disabled={busy} onClick={() => void run(async () => {
-                  updateLot(await client.recordProof(selected.id, ""));
-                  setNotice("Simulated proof recorded. No Stellar transaction was sent.");
-                })}>Simulate Stellar proof</button>
-              )}
               {actor.stellarAccount && selected.verificationCurrent && currentReview?.actorId === actor.id
                 && !currentReview.stellarTransactionHash && (
-                  <section className="space-y-3 rounded border border-slate-200 p-4">
+                  <section className="workspace-inset space-y-3">
                     <h3 className="font-semibold">Anchor this inspection on Stellar Testnet</h3>
                     <form onSubmit={(event) => void submit(event, async () => {
                       const data = await client.prepareProof(selected.id);
@@ -305,7 +496,7 @@ export default function Inventory() {
                   </section>
                 )}
               {actor.role === "verifier" && (selected.status === "pending" || selected.status === "verified") && (
-                <form key={selected.id} className="space-y-3" onSubmit={(event) => {
+                <form key={selected.id} className="workspace-action-form space-y-3" onSubmit={(event) => {
                   const form = event.currentTarget;
                   void submit(event, async (data) => {
                     const inspectedAt = new Date(String(data.get("inspectedAt"))).toISOString();
@@ -339,8 +530,12 @@ export default function Inventory() {
               )}
             </section>
           )}
+          </div>
         </>
       )}
+      {error && <p role="alert" className="workspace-feedback error">{error}</p>}
+      {notice && <p role="status" className="workspace-feedback success">{notice}</p>}
     </section>
+    </WorkspaceLayout>
   );
 }

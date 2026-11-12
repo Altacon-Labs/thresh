@@ -25,7 +25,7 @@ export class InventoryService {
   }
 
   async register(actor: InventoryActor, dto: RegisterLotDto) {
-    if (actor.role !== 'warehouse') throw new ForbiddenException('Warehouse access is required');
+    if (actor.role !== 'warehouse') throw new ForbiddenException('Asset operator access is required');
 
     const category = dto.category ?? 'maize';
     const quantity = dto.category === undefined ? dto.quantityKg : dto.quantity;
@@ -50,6 +50,8 @@ export class InventoryService {
               ? dto.assetIdentifier.trim().toUpperCase() : dto.assetIdentifier.trim(),
           }),
         receiptEvidenceId: dto.receiptEvidenceId,
+        custodyType: dto.custodyType,
+        custodyLocation: dto.custodyLocation?.trim(),
         workspaceId: actor.workspaceId,
         warehouseActorId: actor.id,
         receiptNumber: dto.receiptNumber.toUpperCase(),
@@ -60,7 +62,7 @@ export class InventoryService {
       if (error?.code === 11000 && error.keyPattern?.assetIdentifier) {
         throw new ConflictException('This equipment serial number is already registered');
       }
-      if (error?.code === 11000) throw new ConflictException('This receipt is already registered');
+      if (error?.code === 11000) throw new ConflictException('This asset reference is already registered');
       throw error;
     }
   }
@@ -232,6 +234,7 @@ export class InventoryService {
       stellarDataName, lot.id, lot.receiptNumber, ...assetFields,
       lot.receiptEvidenceId, review.inspectionEvidenceId, review.reason, review.inspectedAt.toISOString(),
       review.recordedAt.toISOString(), actor.stellarAccount, review.stellarNonce,
+      ...(lot.custodyType ? [lot.custodyType, lot.custodyLocation] : []),
     ])).digest('hex');
 
     return {
@@ -250,6 +253,8 @@ export class InventoryService {
       id: lot.id as string,
       receiptNumber: lot.receiptNumber,
       receiptEvidenceId: lot.receiptEvidenceId,
+      custodyType: lot.custodyType ?? 'warehouse',
+      custodyLocation: lot.custodyLocation,
       category,
       assetName: lot.assetName ?? 'Maize',
       assetIdentifier: lot.assetIdentifier,

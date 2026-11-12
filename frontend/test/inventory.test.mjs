@@ -1,23 +1,155 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createDemoInventory, demoLots } from "../src/pages/inventory/demoInventory.ts";
-import { liveInventory } from "../src/pages/inventory/inventoryClient.ts";
+import { connectInventory, liveInventory } from "../src/pages/inventory/inventoryClient.ts";
+import { inRoleQueue } from "../src/pages/inventory/workflow.ts";
 import { formatNaira, parseNaira } from "../src/pages/inventory/money.ts";
+import { marketActivity, marketQuotes, quotesWithinDays } from "../src/pages/inventory/quotes.ts";
+import { publicExploreLots } from "../src/pages/inventory/publicExplore.ts";
+import { connectWalletInventory, revokeWalletSession } from "../src/pages/inventory/walletLogin.ts";
+
+import { formatSampleUsd, parsePreferences, sampleQuoteAmount } from "../src/pages/inventory/preferences.ts";
+
+test("quote preferences default to USD and USDC and validate saved selections", () => {
+  assert.deepEqual(parsePreferences(null), { currency: "USD", stablecoin: "USDC" });
+  assert.deepEqual(parsePreferences("{"), { currency: "USD", stablecoin: "USDC" });
+  assert.deepEqual(parsePreferences('{"currency":"NGN","stablecoin":"EURC"}'), { currency: "NGN", stablecoin: "EURC" });
+  assert.deepEqual(parsePreferences('{"currency":"EUR","stablecoin":"XLM"}'), { currency: "USD", stablecoin: "USDC" });
+  assert.equal(sampleQuoteAmount(225000, "NGN"), 2250);
+  assert.equal(sampleQuoteAmount(225000, "USD"), 1.5);
+  assert.equal(formatSampleUsd(225000), "$1.50");
+});
 
 const now = Date.parse("2026-01-31T12:00:00Z");
 const newLot = { receiptNumber: " new-lot ", category: "maize", quantity: 5000, grade: "Grade A", receiptEvidenceId: "receipt-new" };
 const review = { decision: "verified", reason: "Stock matched receipt.", inspectedAt: "2026-01-30T12:00:00Z", inspectionEvidenceId: "inspection-new" };
 const valuation = { market: "Kano", source: "Sample survey", observedOn: "2026-01-30", priceKoboPerUnit: 45005, approvedValueKobo: 200000000 };
 
+test("chart ranges use the newest recorded observation", () => {
+  const series = ["2025-12-20", "2026-01-01", "2026-01-23", "2026-01-30"]
+    .map((observedOn) => ({ ...valuation, observedOn }));
+  assert.deepEqual(quotesWithinDays(series, 7), series.slice(2));
+  assert.deepEqual(quotesWithinDays(series, 30), series.slice(1));
+  assert.deepEqual(quotesWithinDays(series, null), series);
+  assert.deepEqual(quotesWithinDays([], 7), []);
+});
+
+test("market activity sums the latest inventory values and groups observations by date", () => {
+  const quotes = marketQuotes(publicExploreLots());
+  const result = marketActivity(quotes);
+  assert.equal(result.estimatedValueKobo, quotes.reduce((total, { latest }) => total + latest.estimatedValueKobo, 0));
+  assert.ok(result.observations.length > 0 && result.observations.length <= 12);
+  for (const { date, count } of result.observations) {
+    assert.equal(count, quotes.filter(({ series }) => series.some(({ observedOn }) => observedOn === date)).length);
+  }
+  assert.deepEqual(marketActivity([]), { estimatedValueKobo: 0, observations: [] });
+});
+
+test("public Explore contains illustrative quotes without evidence or approved values", () => {
+  const lots = publicExploreLots();
+  assert.equal(lots.length, 8);
+  assert.equal(new Set(lots.map((lot) => lot.category)).size, 4);
+  assert.equal(marketQuotes(lots).length, 8);
+  for (const lot of lots) {
+    assert.match(lot.id, /^example-/);
+    assert.equal(lot.receiptEvidenceId, "");
+    assert.equal(lot.custodyLocation, undefined);
+    assert.equal(lot.assetIdentifier, undefined);
+    assert.deepEqual(lot.reviews, []);
+    assert(lot.valuations.every((quote) => quote.approvedValueKobo === undefined && quote.source === "Illustrative price series"));
+  }
+});
+
+test("each role starts with the records relevant to its workflow", () => {
+  const lots = demoLots(now);
+  assert.equal(lots.filter((lot) => inRoleQueue(lot, "warehouse")).length, 24);
+  assert.equal(lots.filter((lot) => inRoleQueue(lot, "lender")).length, 11);
+  assert.equal(lots.filter((lot) => inRoleQueue(lot, "verifier")).length, 9);
+  assert.equal(inRoleQueue(lots.find((lot) => lot.status === "revoked"), "verifier"), false);
+});
+
+test("sign-in checks the API role before fetching any records", async (t) => {
+  const calls = t.mock.method(globalThis, "fetch", async (url) => url.endsWith("/session")
+    ? Response.json({ id: "lender", role: "lender" }) : Response.json([]));
+  await assert.rejects(connectInventory("http://localhost/api", "key", "verifier"), /belongs to the Lender role/);
+  assert.equal(calls.mock.callCount(), 1);
+  assert.deepEqual(await connectInventory("http://localhost/api", "key", "lender"), {
+    actor: { id: "lender", role: "lender" }, lots: [],
+  });
+  assert.equal(calls.mock.callCount(), 3);
+});
+
+test("wallet sign-in signs the server challenge and loads the linked role with a short-lived session", async (t) => {
+  const address = "GBXFXNDLV4LSWA4VB7YIL5GBD7BVNR22SGBTDKMO2SBZZHDXSKZYCP7L";
+  const token = `wallet_${"a".repeat(64)}`;
+  const expiresAt = "2026-01-31T20:00:00Z";
+  const requests = t.mock.method(globalThis, "fetch", async (url, request) => {
+    if (url.endsWith("/challenge")) {
+      assert.deepEqual(JSON.parse(request.body), { address, role: "verifier" });
+      return Response.json({ nonce: "nonce", message: "Sign in to Thresh" });
+    }
+    if (url.endsWith("/verify")) {
+      assert.deepEqual(JSON.parse(request.body), { address, role: "verifier", nonce: "nonce", signature: "signed" });
+      return Response.json({ token, expiresAt });
+    }
+    assert.equal(request.headers.Authorization, `Bearer ${token}`);
+    if (url.endsWith("/logout")) return new Response(null, { status: 204 });
+    if (url.endsWith("/session")) return Response.json({ id: "verifier", role: "verifier", walletAddress: address, stellarAccount: address });
+    return Response.json([]);
+  });
+  const result = await connectWalletInventory("http://localhost/api", "verifier", {
+    connect: async () => address,
+    sign: async (message, expectedAddress) => {
+      assert.equal(message, "Sign in to Thresh");
+      assert.equal(expectedAddress, address);
+      return { signature: "signed", signerAddress: address };
+    },
+  });
+  assert.equal(result.actor.stellarAccount, result.walletSession.address);
+  assert.deepEqual(result.walletSession, { address, expiresAt });
+  await revokeWalletSession("http://localhost/api", token);
+  assert.equal(requests.mock.callCount(), 5);
+});
+
+test("wallet switching during a signature prompt stops before session creation", async (t) => {
+  const calls = t.mock.method(globalThis, "fetch", async () => Response.json({ nonce: "nonce", message: "message" }));
+  await assert.rejects(connectWalletInventory("http://localhost/api", "lender", {
+    connect: async () => "first-account",
+    sign: async () => ({ signature: "signed", signerAddress: "another-account" }),
+  }), /wallet account changed/);
+  assert.equal(calls.mock.callCount(), 1);
+});
+
 test("demo seed includes 24 unique lots, realistic statuses and chart histories", () => {
   const lots = demoLots(now);
   assert.equal(lots.length, 24);
   assert.equal(new Set(lots.map((lot) => lot.receiptNumber)).size, 24);
   assert.deepEqual(new Set(lots.map((lot) => lot.category)), new Set(["maize", "packaged_goods", "spare_parts", "equipment"]));
+  assert.deepEqual(new Set(lots.map((lot) => lot.custodyType)), new Set(["warehouse", "owner_site", "third_party"]));
   assert.deepEqual(new Set(lots.map((lot) => lot.status)), new Set(["pending", "verified", "rejected", "revoked"]));
   assert(lots.some((lot) => lot.status === "verified" && !lot.verificationCurrent));
   assert.equal(lots[0].valuations.length, 4);
   assert(lots[0].valuations.every((price) => price.estimatedValueKobo === price.priceKoboPerUnit * lots[0].quantity));
+});
+
+test("market changes use distinct dates from the same lot, market and source", () => {
+  const lot = demoLots(now)[0];
+  const quote = (id, observedOn, priceKoboPerUnit, overrides = {}) => ({
+    id, observedOn, priceKoboPerUnit, market: "Kano", source: "Survey",
+    recordedAt: `${observedOn}T10:00:00Z`, ...overrides,
+  });
+  lot.valuations = [
+    quote("latest", "2026-01-20", 50000),
+    quote("other-market", "2026-01-19", 4000, { market: "Jos" }),
+    quote("other-source", "2026-01-18", 3000, { source: "Different source" }),
+    quote("old", "2026-01-10", 30000),
+    quote("revised", "2026-01-10", 40000, { recordedAt: "2026-01-10T11:00:00Z" }),
+  ];
+  const [result] = marketQuotes([lot, { ...lot, id: "empty", valuations: [] }]);
+  assert.equal(result.latest.id, "latest");
+  assert.deepEqual(result.series.map((row) => row.id), ["revised", "latest"]);
+  assert.equal(result.change, 25);
+  assert.equal(marketQuotes([{ ...lot, valuations: [lot.valuations[0]] }])[0].change, null);
 });
 
 test("non-commodity inventory uses counts and category identifiers", async () => {
@@ -42,12 +174,32 @@ test("non-commodity inventory uses counts and category identifiers", async () =>
   }
 });
 
-test("warehouse, verifier and lender can complete an isolated demo lifecycle", async () => {
+test("an operator can register and verify an asset at its owner’s site", async () => {
+  const demo = createDemoInventory(() => now);
+  const operator = demo.client("warehouse");
+  const verifier = demo.client("verifier");
+  const lender = demo.client("lender");
+  const input = { ...newLot, category: "equipment", quantity: 1, assetName: "Workshop generator",
+    assetIdentifier: "GEN-008", grade: "Good", receiptEvidenceId: "invoice-008",
+    custodyType: "owner_site", custodyLocation: "  Owner workshop, Kaduna  " };
+  await assert.rejects(operator.register({ ...input, custodyLocation: " " }), /site or facility/);
+  await assert.rejects(operator.register({ ...input, custodyType: undefined }), /custody type/);
+  const lot = await operator.register(input);
+  assert.equal(lot.custodyType, "owner_site");
+  assert.equal(lot.custodyLocation, "Owner workshop, Kaduna");
+  assert.equal(lot.receiptEvidenceId, "invoice-008");
+  await verifier.review(lot.id, review);
+  const valued = await lender.value(lot.id, valuation);
+  assert.equal(valued.custodyLocation, "Owner workshop, Kaduna");
+  assert.equal(valued.valuations[0].estimatedValueKobo, valuation.priceKoboPerUnit);
+});
+
+test("asset operator, verifier and lender can complete an isolated demo lifecycle", async () => {
   const demo = createDemoInventory(() => now);
   const warehouse = demo.client("warehouse");
   const verifier = demo.client("verifier");
   const lender = demo.client("lender");
-  await assert.rejects(lender.register(newLot), /warehouse/);
+  await assert.rejects(lender.register(newLot), /asset operator/);
   const lot = await warehouse.register(newLot);
   assert.equal(lot.receiptNumber, "NEW-LOT");
   await assert.rejects(warehouse.register(newLot), /already registered/);

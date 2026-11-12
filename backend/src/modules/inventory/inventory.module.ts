@@ -1,10 +1,38 @@
-import { Body, Controller, Get, Module, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, Module, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { MongooseModule } from '@nestjs/mongoose';
 import { RecordStellarProofDto, RecordValuationDto, RegisterLotDto, ReviewLotDto } from './inventory.dto';
 import { InventoryGuard, InventoryRequest } from './inventory.guard';
 import { InventoryLot, InventoryLotSchema } from './inventory.schema';
 import { InventoryService } from './inventory.service';
+import { InventoryActors } from './inventory-actors';
+import { WalletChallengeDto, WalletVerifyDto } from './inventory-wallet.dto';
+import { WalletChallenge, WalletChallengeSchema, WalletSession, WalletSessionSchema } from './inventory-wallet.schema';
+import { InventoryWalletService } from './inventory-wallet.service';
+
+@ApiTags('Stellar wallet sign-in')
+@Controller('inventory/wallet')
+class InventoryWalletController {
+  constructor(private readonly wallet: InventoryWalletService) {}
+
+  @Post('challenge')
+  @HttpCode(200)
+  challenge(@Headers('origin') origin: string | undefined, @Body() dto: WalletChallengeDto) {
+    return this.wallet.challenge(origin, dto);
+  }
+
+  @Post('verify')
+  @HttpCode(200)
+  verify(@Headers('origin') origin: string | undefined, @Body() dto: WalletVerifyDto) {
+    return this.wallet.authenticate(origin, dto);
+  }
+
+  @Post('logout')
+  @HttpCode(204)
+  logout(@Headers('origin') origin: string | undefined, @Headers('authorization') authorization: string | undefined) {
+    return this.wallet.signOut(origin, authorization);
+  }
+}
 
 @ApiTags('Inventory')
 @ApiBearerAuth()
@@ -50,8 +78,12 @@ class InventoryController {
 }
 
 @Module({
-  imports: [MongooseModule.forFeature([{ name: InventoryLot.name, schema: InventoryLotSchema }])],
-  controllers: [InventoryController],
-  providers: [InventoryGuard, InventoryService],
+  imports: [MongooseModule.forFeature([
+    { name: InventoryLot.name, schema: InventoryLotSchema },
+    { name: WalletChallenge.name, schema: WalletChallengeSchema },
+    { name: WalletSession.name, schema: WalletSessionSchema },
+  ])],
+  controllers: [InventoryController, InventoryWalletController],
+  providers: [InventoryActors, InventoryGuard, InventoryService, InventoryWalletService],
 })
 export class InventoryModule {}

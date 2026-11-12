@@ -10,7 +10,12 @@ export type Valuation = {
 };
 export type Decision = "verified" | "rejected" | "revoked";
 export type Role = "warehouse" | "verifier" | "lender";
-export type Actor = { id: string; role: Role; stellarAccount?: string };
+export const roleLabels: Record<Role, string> = {
+  warehouse: "Asset operator",
+  verifier: "Verifier",
+  lender: "Lender",
+};
+export type Actor = { id: string; role: Role; stellarAccount?: string; walletAddress?: string };
 export type StellarProof = { account: string; dataName: string; dataValue: string };
 export type Lot = {
   id: string;
@@ -22,6 +27,8 @@ export type Lot = {
   unit: "kg" | "unit";
   grade: string;
   receiptEvidenceId: string;
+  custodyType: CustodyType;
+  custodyLocation?: string;
   status: "pending" | Decision;
   verificationCurrent: boolean;
   verificationExpiresAt?: string;
@@ -39,7 +46,7 @@ export type Lot = {
 };
 
 export type LotInput = Pick<Lot, "receiptNumber" | "category" | "quantity" | "grade" | "receiptEvidenceId">
-  & { assetName?: string; assetIdentifier?: string };
+  & { assetName?: string; assetIdentifier?: string; custodyType?: CustodyType; custodyLocation?: string };
 export type ReviewInput = Pick<Lot["reviews"][number], "decision" | "reason" | "inspectedAt" | "inspectionEvidenceId">;
 export type ValuationInput = Pick<Valuation, "market" | "source" | "observedOn" | "priceKoboPerUnit" | "approvedValueKobo">;
 
@@ -51,6 +58,15 @@ export type InventoryClient = {
   prepareProof(id: string): Promise<StellarProof>;
   recordProof(id: string, transactionHash: string): Promise<Lot>;
 };
+
+export class InventoryRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
 
 export function liveInventory(api: string, key: string): InventoryClient & { session(): Promise<Actor> } {
   async function request<T>(path: string, body?: object): Promise<T> {
@@ -66,7 +82,7 @@ export function liveInventory(api: string, key: string): InventoryClient & { ses
     const data = await response.json().catch(() => null);
     if (!response.ok || data === null) {
       const message = Array.isArray(data?.message) ? data.message.join(". ") : data?.message;
-      throw new Error(message || `Inventory API request failed (${response.status})`);
+      throw new InventoryRequestError(message || `Inventory API request failed (${response.status})`, response.status);
     }
     return data as T;
   }
@@ -81,6 +97,15 @@ export function liveInventory(api: string, key: string): InventoryClient & { ses
     recordProof: (id, transactionHash) => request(`lots/${encodeURIComponent(id)}/stellar-proof`, { transactionHash }),
   };
 }
+
+export async function connectInventory(api: string, key: string, selectedRole: Role) {
+  const client = liveInventory(api, key);
+  const actor = await client.session();
+  if (actor.role !== selectedRole) {
+    throw new Error(`This access key belongs to the ${roleLabels[actor.role]} role. Choose that role to continue.`);
+  }
+  return { actor, lots: await client.list() };
+}
 export const inventoryCategories = {
   maize: { label: "Maize", unit: "kg", priceUnit: "kilogram", conditionLabel: "Grade" },
   packaged_goods: { label: "Packaged goods", unit: "unit", priceUnit: "unit", conditionLabel: "Condition", identifierLabel: "Batch ID" },
@@ -89,4 +114,15 @@ export const inventoryCategories = {
 } as const;
 
 export type Category = keyof typeof inventoryCategories;
+
+export const custodyOptions = {
+  owner_site: { label: "Owner’s site", reference: "Asset reference", evidence: "Ownership evidence ID",
+    evidenceHint: "For example, an invoice or fixed asset register entry." },
+  third_party: { label: "Third-party custodian", reference: "Custody reference", evidence: "Custody evidence ID",
+    evidenceHint: "For example, a signed custody acknowledgment." },
+  warehouse: { label: "Warehouse", reference: "Receipt number", evidence: "Receipt evidence ID",
+    evidenceHint: "For example, the document ID for the warehouse receipt." },
+} as const;
+
+export type CustodyType = keyof typeof custodyOptions;
 

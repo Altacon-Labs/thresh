@@ -1,6 +1,6 @@
 # Thresh Soroban contracts
 
-The contracts are standalone. The web app uses Manage Data for live Testnet proofs and simulates proofs in demo mode. The GitHub Actions workflow runs the contract tests and Wasm build on Linux.
+The contracts are standalone. The web app uses Manage Data for Stellar Testnet proofs. The GitHub Actions workflow runs the contract tests and Wasm build on Linux.
 
 | Crate | Responsibilities |
 | --- | --- |
@@ -9,7 +9,7 @@ The contracts are standalone. The web app uses Manage Data for live Testnet proo
 
 The pledge contract calls the registry during opening and checks the exact inspection version. An inspection that expires or is revoked after opening leaves the active pledge in place. Repayment reduces the outstanding principal in NGN kobo. A receipt digest can be recorded once across the pledge contract.
 
-These contracts track acknowledgments and balances. Bank transfers, lender underwriting, defaults, and physical warehouse release require offchain workflows. Deploy with distinct role holders. Each deployment currently fixes the verifier, lender, and warehouse addresses at construction.
+These contracts track acknowledgments and balances. Bank transfers, lender underwriting, defaults, and physical release require offchain workflows. Deploy with distinct role holders. Each deployment fixes the verifier, lender, and appointed custodian addresses at construction. The pledge ABI calls the custodian address `warehouse`. For assets at the owner’s site, that address would still belong to a separate, authorized party.
 
 ## Test and build
 

@@ -1,4 +1,4 @@
-import { inventoryCategories, type Actor, type Category, type InventoryClient, type Lot, type Role } from "./inventoryClient.ts";
+import { custodyOptions, inventoryCategories, roleLabels, type Actor, type Category, type InventoryClient, type Lot, type Role } from "./inventoryClient.ts";
 
 const day = 86_400_000;
 const markets = ["Kano", "Kaduna", "Ibadan", "Jos", "Minna", "Makurdi"];
@@ -23,6 +23,10 @@ export function demoLots(now = Date.now()): Lot[] {
     const unit = inventoryCategories[category].unit;
     const quantity = category === "equipment" ? 1 : category === "maize" ? 1_000 + index * 250 : 50 + index * 8;
     const market = markets[index % markets.length];
+    const custodyType = category === "equipment" ? "owner_site"
+      : category === "spare_parts" ? "third_party" : "warehouse";
+    const site = custodyType === "owner_site" ? "Owner workshop"
+      : custodyType === "third_party" ? "Service partner depot" : "Warehouse";
     const status = index < 14 ? "verified" : index < 20 ? "pending" : index < 22 ? "rejected" : "revoked";
     const expired = index >= 11;
     const inspected = now - (expired ? 35 : 2 + index % 9) * day;
@@ -43,14 +47,15 @@ export function demoLots(now = Date.now()): Lot[] {
       id, receiptNumber: `DEMO-WH-${serial}`, category, assetName: asset.name, quantity, unit,
       ...(asset.identifier ? { assetIdentifier: `${asset.identifier}-${serial}` } : {}),
       grade: category === "maize" ? (index % 3 === 2 ? "Grade B" : "Grade A") : (index % 3 === 2 ? "Good" : "New"),
-      receiptEvidenceId: `demo-receipt-${serial}`,
+      receiptEvidenceId: `demo-${custodyType === "warehouse" ? "receipt" : "evidence"}-${serial}`,
+      custodyType, custodyLocation: `${site} · ${market}`,
       status, verificationExpiresAt: status === "verified" || status === "revoked" ? verificationExpiresAt : undefined,
       verificationCurrent: status === "verified" && !expired,
       valuations: status === "verified" ? valuationHistory : [],
       reviews: status === "pending" ? [] : [{
         decision: status === "revoked" ? "verified" : status,
         actorId: "demo-verifier", recordedAt: inspectedAt, inspectedAt,
-        reason: status === "rejected" ? "Sample grade discrepancy." : "Sample stock and receipt checked.",
+        reason: status === "rejected" ? "Sample condition discrepancy." : "Sample asset and supporting evidence checked.",
         inspectionEvidenceId: `demo-inspection-${serial}`,
         demoProofRecorded: index % 4 === 0 && status === "verified",
       }, ...(status === "revoked" ? [{
@@ -74,7 +79,7 @@ export function createDemoInventory(clock = Date.now) {
   }
 
   function roleRequired(actual: Role, required: Role) {
-    if (actual !== required) throw new Error(`Switch to the ${required} demo role to continue.`);
+    if (actual !== required) throw new Error(`Switch to the ${roleLabels[required].toLowerCase()} demo role to continue.`);
   }
 
   function reset() {
@@ -94,19 +99,26 @@ export function createDemoInventory(clock = Date.now) {
           || !Object.prototype.hasOwnProperty.call(inventoryCategories, input.category)
           || !Number.isSafeInteger(input.quantity) || input.quantity < 1 || !input.grade.trim()
           || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(input.receiptEvidenceId)) {
-          throw new Error("Enter a valid receipt, grade or condition, positive quantity, and evidence ID.");
+          throw new Error("Enter a valid reference, grade or condition, positive quantity, and evidence ID.");
+        }
+        const custodyLocation = input.custodyLocation?.trim();
+        if ((input.custodyType || input.custodyLocation !== undefined) && (!input.custodyType
+          || !Object.prototype.hasOwnProperty.call(custodyOptions, input.custodyType)
+          || !custodyLocation || custodyLocation.length > 120)) {
+          throw new Error("Select a custody type and enter a site or facility.");
         }
         if (input.category !== "maize" && (!input.assetName?.trim() || !input.assetIdentifier?.trim())) {
           throw new Error("An asset name and identifier are required.");
         }
         if (input.category === "equipment" && input.quantity !== 1) throw new Error("Register one equipment item per serial number.");
-        if (lots.some((lot) => lot.receiptNumber === receiptNumber)) throw new Error("This receipt is already registered.");
+        if (lots.some((lot) => lot.receiptNumber === receiptNumber)) throw new Error("This asset reference is already registered.");
         const identifier = input.assetIdentifier?.trim();
         const assetIdentifier = input.category === "equipment" ? identifier?.toUpperCase() : identifier;
         if (input.category === "equipment" && lots.some((lot) => lot.category === "equipment" && lot.assetIdentifier === assetIdentifier)) {
           throw new Error("This equipment serial number is already registered.");
         }
         const lot: Lot = { ...input, assetName: input.category === "maize" ? "Maize" : input.assetName!.trim(),
+          custodyType: input.custodyType ?? "warehouse", custodyLocation,
           assetIdentifier: input.category === "maize" ? undefined : assetIdentifier,
           unit: inventoryCategories[input.category].unit, grade: input.grade.trim(), receiptNumber, id: `demo-${nextId++}`,
           status: "pending", verificationCurrent: false, reviews: [], valuations: [] };

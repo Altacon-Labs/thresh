@@ -8,7 +8,7 @@ if (stellarAccount && !/^G[A-Z2-7]{55}$/.test(stellarAccount)) {
 
 const actors = ["warehouse", "verifier", "lender"].map((role) => {
   const accessKey = randomBytes(32).toString("hex");
-  console.log(`${role} access key: ${accessKey}`);
+  console.log(`${role === "warehouse" ? "asset operator" : role} access key: ${accessKey}`);
   return {
     id: `pilot-${role}`,
     role,

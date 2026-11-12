@@ -1,5 +1,5 @@
 import { Equals, IsIn, IsISO8601, IsInt, IsString, Matches, Max, MaxLength, Min, ValidateIf } from 'class-validator';
-import { categories, InventoryCategory } from './inventory-category';
+import { categories, custodyTypes, CustodyType, InventoryCategory } from './inventory-category';
 
 export class RegisterLotDto {
   @IsString()
@@ -46,6 +46,16 @@ export class RegisterLotDto {
   @IsString()
   @Matches(/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/)
   receiptEvidenceId: string;
+
+  @ValidateIf((dto, value) => dto.custodyLocation !== undefined || value !== undefined)
+  @IsIn(custodyTypes)
+  custodyType?: CustodyType;
+
+  @ValidateIf((dto, value) => dto.custodyType !== undefined || value !== undefined)
+  @IsString()
+  @Matches(/\S/)
+  @MaxLength(120)
+  custodyLocation?: string;
 }
 
 export class ReviewLotDto {

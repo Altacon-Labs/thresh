@@ -1,11 +1,9 @@
-import {
-  CategoryScale, Chart as ChartJS, Legend, LinearScale, LineElement, PointElement, Tooltip,
-} from "chart.js";
-import { Line } from "react-chartjs-2";
+import PriceHistoryChart from "./PriceHistoryChart";
 import { formatNaira } from "./money";
+import { comparableQuotes, orderQuotes } from "./quotes";
 import type { Valuation } from "./inventoryClient";
 
-ChartJS.register(CategoryScale, Legend, LinearScale, LineElement, PointElement, Tooltip);
+
 
 export default function ValuationPanel({ valuations, grade, assetName, unit, verificationCurrent }: {
   valuations: Valuation[];
@@ -14,26 +12,19 @@ export default function ValuationPanel({ valuations, grade, assetName, unit, ver
   unit: "kg" | "unit";
   verificationCurrent: boolean;
 }) {
-  const ordered = [...valuations].sort((a, b) =>
-    a.observedOn.localeCompare(b.observedOn) || a.recordedAt.localeCompare(b.recordedAt));
+  const ordered = orderQuotes(valuations);
   const latest = ordered[ordered.length - 1];
   const approved = [...valuations].filter((entry) => entry.approvedValueKobo !== undefined)
     .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt))[0];
 
   if (!latest) return <p className="text-sm text-slate-600">No reference price has been recorded.</p>;
 
-  const series = new Map<string, Valuation>();
-  for (const entry of ordered) {
-    if (entry.market.toLowerCase() === latest.market.toLowerCase()
-      && entry.source.toLowerCase() === latest.source.toLowerCase()) {
-      series.set(entry.observedOn, entry);
-    }
-  }
+  const series = comparableQuotes(ordered, latest);
 
   return (
     <div className="space-y-4">
       {!verificationCurrent && <p className="text-amber-800">Historical valuations · verification is no longer current.</p>}
-      <dl className="grid gap-3 sm:grid-cols-3">
+      <dl className="valuation-metrics">
         <div><dt className="text-sm text-slate-600">Reference price</dt><dd className="font-semibold">{formatNaira(latest.priceKoboPerUnit)} / {unit}</dd></div>
         <div><dt className="text-sm text-slate-600">Estimated lot value</dt><dd className="font-semibold">{formatNaira(latest.estimatedValueKobo)}</dd></div>
         <div><dt className="text-sm text-slate-600">Lender-approved value</dt><dd className="font-semibold">
@@ -41,25 +32,7 @@ export default function ValuationPanel({ valuations, grade, assetName, unit, ver
         </dd>{approved && <dd className="text-sm text-slate-600">Recorded {new Date(approved.recordedAt).toLocaleString()}</dd>}</div>
       </dl>
       <p className="text-sm text-slate-600">{latest.market} · {grade} · {latest.source} · {latest.observedOn}</p>
-      {series.size > 1 ? (
-        <div className="h-48">
-          <Line
-            aria-label={`${assetName} reference price history for ${latest.market} from ${latest.source}`}
-            role="img"
-            data={{
-              labels: [...series.keys()],
-              datasets: [{
-                label: `NGN per ${unit}`,
-                data: [...series.values()].map((entry) => entry.priceKoboPerUnit / 100),
-                borderColor: "#1d4ed8",
-                backgroundColor: "#1d4ed8",
-              }],
-            }}
-            options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
-              scales: { y: { title: { display: true, text: `NGN per ${unit}` } } } }}
-          />
-        </div>
-      ) : <p className="text-sm text-slate-600">The chart appears after two dates are recorded for this market and source.</p>}
+      <PriceHistoryChart series={series} assetName={assetName} unit={unit} />
       <details>
         <summary className="cursor-pointer text-sm font-medium">Valuation history</summary>
         <div className="overflow-x-auto">

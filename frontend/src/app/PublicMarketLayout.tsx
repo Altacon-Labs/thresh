@@ -1,4 +1,4 @@
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useMatch, useNavigate, useSearchParams } from "react-router-dom";
 import type { FormEvent, ReactNode } from "react";
 import { inventoryCategories } from "../pages/inventory/inventoryClient";
 
@@ -15,11 +15,17 @@ export default function PublicMarketLayout({ children, query, currency, onSettin
   onRequestAccess: () => void;
 }) {
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const asset = useMatch("/real-world-assets/:assetId");
 
   function search(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const term = String(new FormData(event.currentTarget).get("query") ?? "").trim();
-    navigate(term ? `${explorePath}?q=${encodeURIComponent(term)}` : explorePath);
+    const next = new URLSearchParams();
+    if (params.get("category") === "tokenized-stocks" || asset?.params.assetId?.startsWith("stock-")) next.set("category", "tokenized-stocks");
+    if (params.get("list") === "watchlist" && next.has("category")) next.set("list", "watchlist");
+    if (term) next.set("q", term);
+    navigate(next.size ? `${explorePath}?${next}` : explorePath);
   }
 
   return (
@@ -64,6 +70,7 @@ export default function PublicMarketLayout({ children, query, currency, onSettin
             <nav aria-label="Explore footer links">
               <h2>Explore</h2>
               <Link to={explorePath}>All assets</Link>
+              <Link to={explorePath + "?category=tokenized-stocks"}>Tokenized stocks</Link>
               {Object.entries(inventoryCategories).map(([category, details]) => (
                 <Link key={category} to={`${explorePath}?category=${category}`}>{details.label}</Link>
               ))}

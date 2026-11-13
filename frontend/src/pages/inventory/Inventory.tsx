@@ -6,6 +6,8 @@ import { parsePreferences, preferenceKey, type Preferences } from "./preferences
 import PublicMarketLayout from "../../app/PublicMarketLayout";
 import ContextCard from "../../app/ContextCard";
 import Markets from "./Markets";
+import StockMarket from "./StockMarket";
+import { tokenizedStocks } from "./tokenizedStocks";
 import PublicMarkets from "./PublicMarkets";
 import PublicAssetDetail from "./PublicAssetDetail";
 import SignIn from "./SignIn";
@@ -206,11 +208,14 @@ export default function Inventory() {
 
   if (!actor) {
     const quote = exploreQuotes.find(({ lot }) => lot.id === requestedAssetId);
+    const stock = tokenizedStocks.find(({ id }) => id === requestedAssetId);
     const query = params.get("q") ?? "";
     return (
       <PublicMarketLayout query={query} currency={preferences.currency} onSettings={() => setSettingsOpen(true)} onSignIn={() => setAccessDialog({})}
         onRequestAccess={() => setAccessDialog({ mode: "request" })}>
-        {quote ? <PublicAssetDetail key={quote.lot.id} quote={quote} currency={preferences.currency} onSignIn={() => setAccessDialog({ role: "lender" })} />
+        {stock || requestedCategory === "tokenized-stocks"
+          ? <StockMarket stock={stock} query={query} savedOnly={params.get("list") === "watchlist"} />
+          : quote ? <PublicAssetDetail key={quote.lot.id} quote={quote} currency={preferences.currency} onSignIn={() => setAccessDialog({ role: "lender" })} />
           : <PublicMarkets currency={preferences.currency} lots={exploreLots} category={publicCategory} query={query} />}
         {settings}
         {notice && <p role="status" className="workspace-feedback">{notice}</p>}

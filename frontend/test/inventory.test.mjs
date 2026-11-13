@@ -262,3 +262,12 @@ test("live failures remain errors instead of returning sample records", async (t
   t.mock.method(globalThis, "fetch", async () => new Response("Service offline", { status: 503 }));
   await assert.rejects(liveInventory("http://localhost/api", "key").list(), /503/);
 });
+
+test("sample tokenized stock listings have unique IDs and match their latest USD observation", async () => {
+  const { tokenizedStocks } = await import("../src/pages/inventory/tokenizedStocks.ts");
+  assert.equal(new Set(tokenizedStocks.map(({ id }) => id)).size, 4);
+  for (const stock of tokenizedStocks) {
+    assert.equal(stock.priceCents, stock.history.at(-1).priceCents);
+    assert.ok(stock.history.every(({ priceCents }) => Number.isSafeInteger(priceCents) && priceCents > 0));
+  }
+});

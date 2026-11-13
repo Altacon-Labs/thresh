@@ -1,0 +1,13 @@
+{
+  "name": "thresh-stellar",
+  "private": true,
+  "scripts": {
+    "setup": "npm --prefix frontend install && npm --prefix backend install",
+    "dev": "npm --prefix frontend run dev",
+    "dev:api": "npm --prefix backend run dev",
+    "build": "npm --prefix frontend run build && npm --prefix backend run build",
+    "test": "npm --prefix frontend test",
+    "test:api": "npm --prefix backend test",
+    "test:e2e": "npm --prefix frontend run test:e2e"
+  }
+}

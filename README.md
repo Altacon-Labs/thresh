@@ -13,7 +13,34 @@ Assets can stay at the **owner’s site**, with a **third-party custodian**, or 
 
 Existing maize receipts, valuations, and Stellar proof references work with the same database.
 
+## How Thresh works
+
+1. **Browse Explore.** Anyone can search sample assets, compare reference quotes, and star assets. The Trending and Watchlist cards show up to four items each. Use **More** to open the full list. The Market Status chart counts sample quote observations by date.
+2. **Register an asset.** An asset operator signs in and enters its quantity, condition, custody location, unique reference, and evidence ID. For example, a generator can stay at the owner’s workshop and be registered with its serial number and an invoice reference. Evidence IDs point to documents held outside Thresh.
+3. **Verify it.** A designated human verifier checks the asset and supporting evidence outside the app. They may visit the site or review evidence remotely if the lender’s inspection policy permits it. They enter the decision, inspection time, evidence ID, and reason. An approval is current for 30 days from the inspection. A verifier can revoke it or record a fresh inspection after expiry.
+4. **Record a valuation.** A lender opens a currently verified asset and enters a dated price with its market and source. Thresh multiplies the price by the registered quantity and stores any lender-approved value separately. Two observations for the same market and source create a price history.
+5. **Optionally anchor the inspection.** The verifier can publish a salted digest on Stellar Testnet. The lender can open the saved transaction from the inspection history.
+
+### Human verification and automated checks
+
+The verifier is a person or organization assigned to the workspace. Thresh checks role permissions, workspace access, inspection dates and expiry, and whether a submitted Stellar proof matches the expected account and digest. A matching transaction establishes that the configured account published the digest. The physical condition, ownership, and quality of the evidence depend on the verifier’s assessment.
+
+The running app covers registration, inspection, valuation, and proof recording. The standalone Soroban contracts model pledges and repayment acknowledgments. Live loan funding and stablecoin transfers are outside the current workflow.
+
 ## Run the app
+
+### Run from the repository root
+
+Use Node.js 22.18 or later. From the extracted folder that contains this README and the root package.json, run:
+
+```sh
+npm run setup
+npm run dev
+```
+
+The dev command starts Explore. To use the private workspace, configure MongoDB and pilot credentials as described in the [pilot setup guide](INVENTORY-PILOT.md), then run `npm run dev:api` from the root in a second terminal. The frontend and backend also keep their own package.json files, so the commands below still work from either directory.
+
+### Run each package separately
 
 Use Node.js 22.18 or later. From `frontend`, run `npm install` and `npm run dev`. Open the URL printed by Vite to browse **Explore** without an account. Public quotes and charts are illustrative and load without an API connection. Explore defaults to USD using a fixed sample rate of ₦1,500 per dollar. Open **Settings** from Explore or the workspace to choose USD or NGN for Explore and save a Stellar stablecoin preference (USDC or EURC) in your browser. Private valuations are recorded in NGN. Stablecoin transfers are not wired.
 
@@ -33,6 +60,10 @@ Wallet sign-in uses a [Stellar SEP-53 message signature](https://github.com/stel
 
 On **Markets**, filter by category or search for an asset, reference, or market. Select a quote to see its history, then choose **Open asset record**. Quotes are entered manually. Change compares the latest two dates for the same lot, market, and source.
 
+## Tokenized stocks preview
+
+Open **Tokenized stocks** from Explore to browse fictional listings with sample USD prices, search by ticker, view price history, and save stocks to a browser watchlist. These examples have no Stellar issuer and represent no ownership rights. Trading and settlement are outside this preview.
+
 ## Optional sample data
 
 To try the real sign-in and workflows with 24 synthetic records, set the database name to `thresh_demo` in `backend/.env`, generate the pilot keys, and run `npm run pilot:seed` from `backend`. The seed command only writes to that named database. Re-running it adds missing sample records without replacing existing ones.
@@ -46,13 +77,33 @@ To try the real sign-in and workflows with 24 synthetic records, set the databas
 
 Each new anchor replaces the same account data entry. Previous proofs reference their own transactions. Testnet resets can remove ledger history. Use synthetic records. Only a salted digest goes onchain. The proof records the inspection attestation and does not create a pledge or move funds.
 
-The app opens directly to the inventory workspace. The API reads Stellar Testnet transactions through Horizon, and verifiers sign and submit proofs through Stellar Lab.
-
 ## Value a verified lot
 
 Sign in as a lender and open a lot with a current verification. Enter the market, source, observation date, and price for the recorded grade or condition. Thresh multiplies the price by the registered kilograms or item count. An optional lender-approved value is tracked separately from the estimate.
 
 Record a second observation date for the same source and market to see a price chart. Workspace participants can review the valuation history. Prices are entered manually, and a recorded valuation does not approve a loan.
+
+## Roadmap and Drips Wave contributions
+
+The [contribution backlog](ROADMAP.md) lists 25 issue drafts with repository pointers, suggested Wave complexity, acceptance criteria, and dependencies.
+
+1. **Repository and Explore readiness** — make builds reproducible, test stock browsing, and add transaction signing.
+2. **Stellar Testnet stock trading** — issue one demo asset, authorize wallets, settle buys and sells, and verify balances and receipts.
+3. **Collateral verification and lending** — add private evidence, AI-assisted review, loan requests, and Testnet funding and repayment.
+4. **Live issuer integration** — onboard a partner, disclose shareholding or custody rights, and connect eligible users to execution and settlement.
+
+Start with the independent issues in the roadmap's first Wave list.
+
+## Contributor guide
+
+| Area | Where to start |
+| --- | --- |
+| Public Explore and asset details | [Frontend inventory pages](frontend/src/pages/inventory) for quote filtering, metric cards, watchlists, and charts. Public sample records are generated in [publicExplore.ts](frontend/src/pages/inventory/publicExplore.ts). |
+| Private workspace and sign-in | [Inventory.tsx](frontend/src/pages/inventory/Inventory.tsx) connects the role-based UI to [inventoryClient.ts](frontend/src/pages/inventory/inventoryClient.ts). |
+| API, storage, and permissions | [Inventory module](backend/src/modules/inventory) contains the NestJS API, MongoDB-backed rules, wallet sessions, and Stellar Horizon checks. |
+| Onchain registry and pledge tracking | [Soroban contracts](contracts/README.md) documents contract behavior, tests, and future app integration. |
+
+For a UI change, start the frontend and test Explore without any credentials. For a workflow change, use the [pilot setup guide](INVENTORY-PILOT.md) and an isolated MongoDB database. Use three separate role credentials in the same workspace and walk through registration, inspection, and valuation with sample data. Keep workspace keys and wallet secrets out of commits. In your pull request, describe the affected role or screen and the tests you ran. Include screenshots for layout changes.
 
 ## Tests
 

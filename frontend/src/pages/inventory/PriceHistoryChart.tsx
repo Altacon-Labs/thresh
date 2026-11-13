@@ -5,26 +5,28 @@ import type { Valuation } from "./inventoryClient";
 
 ChartJS.register(CategoryScale, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip);
 
-export default function PriceHistoryChart({ series, assetName, unit, currency = "NGN" }: {
+export default function PriceHistoryChart({ series = [], assetName, unit, currency = "NGN", points }: {
   currency?: QuoteCurrency;
-  series: Valuation[];
+  series?: Valuation[];
+  points?: { date: string; amount: number }[];
   assetName: string;
   unit: "kg" | "unit";
 }) {
   const latest = series[series.length - 1];
-  if (series.length < 2) {
+  const observations = points ?? series.map((entry) => ({ date: entry.observedOn, amount: sampleQuoteAmount(entry.priceKoboPerUnit, currency) }));
+  if (observations.length < 2) {
     return <p className="text-sm text-slate-600">The chart appears after two dates are recorded for this market and source.</p>;
   }
   return (
     <div className="valuation-chart">
       <Line
-        aria-label={`${assetName} reference price history for ${latest.market} from ${latest.source}`}
+        aria-label={`${assetName} reference price history ${latest ? `for ${latest.market} from ${latest.source}` : ""}`}
         role="img"
         data={{
-          labels: series.map((entry) => entry.observedOn),
+          labels: observations.map(({ date }) => date),
           datasets: [{
             label: `${currency} per ${unit}`,
-            data: series.map((entry) => sampleQuoteAmount(entry.priceKoboPerUnit, currency)),
+            data: observations.map(({ amount }) => amount),
             borderColor: "#2258e7",
             backgroundColor: "#2258e716",
             pointBackgroundColor: "#2258e7",

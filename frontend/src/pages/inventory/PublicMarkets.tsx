@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { inventoryCategories, type Category, type Lot } from "./inventoryClient";
 import { formatNaira } from "./money";
@@ -8,7 +8,7 @@ import { marketQuotes, trendingQuotes } from "./quotes";
 import MarketHighlights from "./MarketHighlights";
 import { categoryMarks, quoteChange, quoteTone } from "./quoteDisplay";
 
-const watchlistKey = "thresh.explore.watchlist";
+import useExploreWatchlist from "./useExploreWatchlist";
 
 function MiniTrend({ prices, tone }: { prices: number[]; tone: string }) {
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -44,23 +44,7 @@ export default function PublicMarkets({ lots, category, query, currency }: {
   const list = params.get("list");
   const formatQuote = currency === "USD" ? formatSampleUsd : formatNaira;
   const quotes = marketQuotes(lots);
-  const [watchlist, setWatchlist] = useState<string[]>(() => {
-    try {
-      const saved: unknown = JSON.parse(window.localStorage.getItem(watchlistKey) ?? "[]");
-      return Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string") : [];
-    } catch {
-      return [];
-    }
-  });
-  function toggleWatchlist(id: string) {
-    const next = watchlist.includes(id) ? watchlist.filter((savedId) => savedId !== id) : [...watchlist, id];
-    setWatchlist(next);
-    try {
-      window.localStorage.setItem(watchlistKey, JSON.stringify(next));
-    } catch {
-      // Keep the watchlist available for the current session.
-    }
-  }
+  const { watchlist, toggleWatchlist } = useExploreWatchlist();
 
   const term = query.trim().toLowerCase();
   const displayedQuotes = list === "trending" ? trendingQuotes(quotes)
@@ -91,6 +75,7 @@ export default function PublicMarkets({ lots, category, query, currency }: {
           {Object.entries(inventoryCategories).map(([id, item]) => (
             <Link key={id} to={categoryUrl(id)} aria-current={category === id ? "page" : undefined}>{item.label}</Link>
           ))}
+          <Link to="/real-world-assets?category=tokenized-stocks">Tokenized stocks</Link>
         </nav>
         <div className="public-table-heading">
           <div>
